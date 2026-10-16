@@ -1,0 +1,125 @@
+name: eventbook
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eventbook_dev}
+      POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:-eventbook_bootstrap}
+      POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?POSTGRES_BOOTSTRAP_PASSWORD is required (see .env.example)}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No published DB port by default; app containers reach it as db:5432.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Runtime only. No bootstrap/migration/test credentials here.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required (see .env.example)}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      APP_ENV: ${APP_ENV:-development}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
+      EXPECTED_ALEMBIC_REVISION: ${EXPECTED_ALEMBIC_REVISION:-}
+    volumes:
+      # Hot reload for local development; dependency changes require rebuild.
+      - ./backend/app:/code/app
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Strict readiness: 200 only when DB + expected schema/revision ready.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; raise SystemExit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).getcode()==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Public only. No DATABASE_URL, no secrets.
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api}
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      # Separate container volumes prevent host/container build conflicts.
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    depends_on:
+      # Backend is healthy once migrations exist (TASK-002+), so frontend
+      # waits for ready backend. (Was service_started while 503 was expected.)
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  tools:
+    profiles: ["tools"]
+    build:
+      context: ./backend
+      target: dev
+    volumes:
+      - ./backend:/code
+    environment:
+      # Runtime URL (same restricted role as backend; used for read checks only).
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      # Privileged migration/test URLs (never passed to backend or frontend).
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL is required}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}
+      TEST_MIGRATION_DATABASE_URL: ${TEST_MIGRATION_DATABASE_URL:?TEST_MIGRATION_DATABASE_URL is required}
+      # Bootstrap inputs for explicit local role/database provisioning (TASK-002).
+      POSTGRES_DB: ${POSTGRES_DB:-eventbook_dev}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-eventbook_test}
+      POSTGRES_BOOTSTRAP_USER: ${POSTGRES_BOOTSTRAP_USER:?POSTGRES_BOOTSTRAP_USER is required}
+      POSTGRES_BOOTSTRAP_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?POSTGRES_BOOTSTRAP_PASSWORD is required}
+      POSTGRES_RUNTIME_USER: ${POSTGRES_RUNTIME_USER:?POSTGRES_RUNTIME_USER is required}
+      POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD is required}
+      POSTGRES_MIGRATION_USER: ${POSTGRES_MIGRATION_USER:?POSTGRES_MIGRATION_USER is required}
+      POSTGRES_MIGRATION_PASSWORD: ${POSTGRES_MIGRATION_PASSWORD:?POSTGRES_MIGRATION_PASSWORD is required}
+      POSTGRES_TEST_RUNTIME_USER: ${POSTGRES_TEST_RUNTIME_USER:?POSTGRES_TEST_RUNTIME_USER is required}
+      POSTGRES_TEST_RUNTIME_PASSWORD: ${POSTGRES_TEST_RUNTIME_PASSWORD:?POSTGRES_TEST_RUNTIME_PASSWORD is required}
+      POSTGRES_TEST_MIGRATION_USER: ${POSTGRES_TEST_MIGRATION_USER:?POSTGRES_TEST_MIGRATION_USER is required}
+      POSTGRES_TEST_MIGRATION_PASSWORD: ${POSTGRES_TEST_MIGRATION_PASSWORD:?POSTGRES_TEST_MIGRATION_PASSWORD is required}
+      # Seed accounts (used only by explicit `python -m app.seed` in TASK-002+).
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?SEED_ADMIN_PASSWORD is required}
+      SEED_USER_EMAIL: ${SEED_USER_EMAIL:-user@example.com}
+      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:?SEED_USER_PASSWORD is required}
+      EXPECTED_ALEMBIC_REVISION: ${EXPECTED_ALEMBIC_REVISION:-}
+      APP_ENV: ${APP_ENV:-development}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
+    depends_on:
+      db:
+        condition: service_healthy
+    # No ports. One-off usage, e.g.:
+    #   docker compose --profile tools run --rm tools pytest
+    #   docker compose --profile tools run --rm tools alembic upgrade head
+    #   docker compose --profile tools run --rm tools python -m app.seed
+
+volumes:
+  postgres_data:
+  frontend_node_modules:
+  frontend_next:
