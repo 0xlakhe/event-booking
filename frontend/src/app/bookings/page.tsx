@@ -140,7 +140,10 @@ export default function BookingsPage() {
 
   return (
     <main>
-      <h1>My bookings</h1>
+      <header className="page-heading">
+        <h1>My bookings</h1>
+        <p>Your plans, all in one place.</p>
+      </header>
       {ready && authError !== null && (
         <p role="alert">
           {authError}{" "}
@@ -160,7 +163,7 @@ export default function BookingsPage() {
           <Link href="/admin">admin panel</Link>.
         </p>
       )}
-      {state === "pending" && <p>Loading bookings…</p>}
+      {state === "pending" && <p className="empty-state" role="status">Loading bookings…</p>}
       {state === "error" && (
         <p role="alert">
           {failure}{" "}
@@ -170,26 +173,30 @@ export default function BookingsPage() {
         </p>
       )}
       {state === "empty" && !isAdmin && user !== null && visible.length === 0 && total === 0 && (
-        <p>No bookings yet. Browse events to book a seat.</p>
+        <p className="empty-state">No bookings yet. Browse events to book a seat.</p>
       )}
       {visible.length > 0 && (
         <>
-          <ul>
+          <ul className="booking-list">
             {visible.map((booking) => {
               const cancelled = booking.cancelled_at !== null;
               const started = hasStarted(booking.event.starts_at, now);
               return (
-                <li key={booking.id} className="card">
-                  <Link href={`/events/${booking.event.id}`}>
-                    <strong>{booking.event.title}</strong>
-                  </Link>
-                  <br />
-                  <span className="muted">
-                    <span title={NEPAL_LABEL}>{formatNepal(booking.event.starts_at)}</span>
-                    {cancelled ? " · Cancelled" : ` · ${booking.event.seats_left} seats left`}
-                  </span>
+                <li key={booking.id} className={`card${cancelled ? " booking-cancelled" : ""}`}>
+                  <div className="booking-info">
+                    <h2>
+                      <Link href={`/events/${booking.event.id}`}>
+                        {booking.event.title}
+                      </Link>
+                    </h2>
+                    <p className="muted">
+                      <time dateTime={booking.event.starts_at} title={NEPAL_LABEL}>{formatNepal(booking.event.starts_at)}</time>
+                    </p>
+                    <p className="muted">{booking.event.venue}</p>
+                    <span className="status-label">{cancelled ? "Cancelled" : "Booked"}</span>
+                  </div>
                   {!cancelled && (
-                    <p>
+                    <div className="booking-actions">
                       <button
                         type="button"
                         disabled={pendingId !== null || started}
@@ -198,29 +205,31 @@ export default function BookingsPage() {
                         {pendingId === booking.id ? "Cancelling…" : "Cancel booking"}
                       </button>
                       {started && (
-                        <span className="muted">
+                        <p className="muted">
                           {" "}This event has already started; it can no longer be cancelled.
-                        </span>
+                        </p>
                       )}
-                    </p>
+                    </div>
                   )}
                 </li>
               );
             })}
           </ul>
-          <p className="muted">
-            Page {page} of {pages} ({total} bookings)
-          </p>
-          {pages > 1 && (
-            <p>
-              <button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                Previous
-              </button>{" "}
-              <button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-                Next
-              </button>
+          <div className="pagination">
+            <p className="muted">
+              Page {page} of {pages} ({total} bookings)
             </p>
-          )}
+            {pages > 1 && (
+              <p className="button-row">
+                <button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                  Previous
+                </button>{" "}
+                <button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>
+                  Next
+                </button>
+              </p>
+            )}
+          </div>
         </>
       )}
       {visible.length === 0 && pages > 1 && (
@@ -231,7 +240,8 @@ export default function BookingsPage() {
         </p>
       )}
       {failure !== null && state !== "error" && <p role="alert">{failure}</p>}
-      <p>
+      <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
+      <p className="return-link">
         <Link href="/">Back to events</Link>
       </p>
     </main>

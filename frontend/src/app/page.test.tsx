@@ -110,6 +110,20 @@ describe("stale search responses", () => {
   });
 });
 
+describe("event discovery", () => {
+  it("links the hero to the visible listing and gives each event one detail action with its date", async () => {
+    apiMock.listEvents.mockResolvedValue({ items: [event("Evening workshop")], total: 1 });
+    render(<AuthProvider><Home /></AuthProvider>);
+    await screen.findByText("Evening workshop");
+    expect(screen.getByRole("link", { name: "Browse events" }).getAttribute("href")).toBe("#events");
+    const detailLinks = screen.getAllByRole("link").filter((link) => link.getAttribute("href") === "/events/id-Evening workshop");
+    expect(detailLinks).toHaveLength(1);
+    expect(detailLinks[0].textContent).toBe("View event");
+    expect(screen.getByRole("link", { name: "View event: Evening workshop" })).toBe(detailLinks[0]);
+    expect(screen.getByText("01 Jan 2030, 15:45").closest("time")?.getAttribute("dateTime")).toBe("2030-01-01T10:00:00Z");
+  });
+});
+
 describe("admin navigation", () => {
   it("redirects admins to management only after restoration", async () => {
     routerMock.replace.mockClear();

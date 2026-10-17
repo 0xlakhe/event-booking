@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError, api, type EventSummary } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { formatNepal, NEPAL_LABEL } from "../lib/datetime";
 
 const PAGE_SIZE = 10;
 
@@ -16,7 +17,7 @@ function seatsLabel(event: EventSummary): string {
 
 export default function Home() {
   return (
-    <Suspense fallback={<p>Loading events…</p>}>
+    <Suspense fallback={<main><p className="empty-state" role="status">Loading events…</p></main>}>
       <Listing />
     </Suspense>
   );
@@ -87,13 +88,12 @@ function Listing() {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <main>
-      <h1>EventBook</h1>
-      {ready && user === null && (
-        <p className="muted">
-          <Link href="/login">Log in</Link> or <Link href="/register">register</Link> to book seats.
-        </p>
-      )}
+    <main className="home-page">
+      <section className="home-hero" aria-labelledby="home-title">
+        <h1 id="home-title">Find your next experience</h1>
+        <p>Make room for something new. Discover upcoming events and find a seat for what moves you.</p>
+        <a className="button button-primary" href="#events">Browse events</a>
+      </section>
       {ready && expired && <p role="alert">Your session expired. Please log in again.</p>}
       {ready && authError !== null && (
         <p role="alert">
@@ -104,65 +104,75 @@ function Listing() {
         </p>
       )}
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          search(draft);
-        }}
-      >
-        <input
-          type="search"
-          placeholder="Search events by title"
-          aria-label="Search events by title"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-        />{" "}
-        <button type="submit">Search</button>
-      </form>
+      <section id="events" className="event-listing" aria-labelledby="events-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="events-title">Upcoming events</h2>
+            <p className="muted">Good things ahead. Find your place.</p>
+          </div>
+          <form className="search-form" role="search"
+            onSubmit={(e) => {
+              e.preventDefault();
+              search(draft);
+            }}
+          >
+            <input
+              type="search"
+              placeholder="Search events by title"
+              aria-label="Search events by title"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />{" "}
+            <button type="submit">Search</button>
+          </form>
+        </div>
 
-      {state === "pending" && <p>Loading events…</p>}
-      {state === "error" && (
-        <p role="alert">
-          {failure}{" "}
-          <button type="button" onClick={() => void load()}>
-            Retry
-          </button>
-        </p>
-      )}
-      {state === "empty" && <p>No events found. Try a different search.</p>}
-      {(state === "ready" || items.length > 0) && (
-        <>
-          <ul>
-            {items.map((event) => (
-              <li key={event.id} className="card">
-                <Link href={`/events/${event.id}`}>
-                  <strong>{event.title}</strong>
-                </Link>
-                <br />
-                <span className="muted">
-                  {event.venue} · {event.seats_left} / {event.total_seats} seats ·{" "}
-                  {seatsLabel(event)}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <p className="muted">
-            Page {page} of {pages} ({total} events)
-          </p>
-          <p>
-            <button type="button" disabled={page <= 1 || state === "pending"} onClick={() => go(page - 1)}>
-              Previous
-            </button>{" "}
-            <button
-              type="button"
-              disabled={page >= pages || state === "pending"}
-              onClick={() => go(page + 1)}
-            >
-              Next
+        {state === "pending" && <p className="empty-state" role="status">Loading events…</p>}
+        {state === "error" && (
+          <p role="alert">
+            {failure}{" "}
+            <button type="button" onClick={() => void load()}>
+              Retry
             </button>
           </p>
-        </>
-      )}
+        )}
+        {state === "empty" && <p className="empty-state">No events found. Try a different search.</p>}
+        {(state === "ready" || items.length > 0) && (
+          <>
+            <ul className="event-grid">
+              {items.map((event) => (
+                <li key={event.id} className="card event-card">
+                  <time className="event-date" dateTime={event.starts_at} title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</time>
+                  <h3>{event.title}</h3>
+                  <p className="event-venue">{event.venue}</p>
+                  <div className="event-card-footer">
+                    <span className={`availability${event.seats_left <= 0 ? " availability-full" : ""}`}>{seatsLabel(event)}</span>
+                    <Link className="button" href={`/events/${event.id}`} aria-label={`View event: ${event.title}`}>View event</Link>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className="pagination">
+              <p className="muted">
+                Page {page} of {pages} ({total} events)
+              </p>
+              <p className="button-row">
+                <button type="button" disabled={page <= 1 || state === "pending"} onClick={() => go(page - 1)}>
+                  Previous
+                </button>{" "}
+                <button
+                  type="button"
+                  disabled={page >= pages || state === "pending"}
+                  onClick={() => go(page + 1)}
+                >
+                  Next
+                </button>
+              </p>
+            </div>
+          </>
+        )}
+        <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
+      </section>
     </main>
   );
 }

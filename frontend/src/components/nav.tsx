@@ -31,29 +31,39 @@ export default function Nav() {
   }
 
   return (
-    <nav aria-label="Primary">
-      {showEvents && <Link href="/">Events</Link>}
-      {ready && user !== null && user.role !== "admin" && (
-        <>
-          {" · "}<Link href="/bookings">My bookings</Link>
-        </>
-      )}
-      {ready && user?.role === "admin" && !onAdminPage && (
-        <>
-          {" · "}<Link href="/admin">Admin</Link>
-        </>
-      )}
-      {ready && user !== null && (
-        <>
-          {" · "}
-          <span className="muted">
-            {user.email} ({user.role})
-          </span>{" "}
-          <button type="button" onClick={() => void handleLogout()}>
-            Log out
-          </button>
-        </>
-      )}
-    </nav>
+    <header className="site-header">
+      <nav className="site-nav" aria-label="Primary">
+        <Link className="brand" href={ready && user?.role === "admin" ? "/admin" : "/"}>EventBook</Link>
+        <div className="nav-links">
+          {showEvents && <Link href="/" aria-current={pathname === "/" ? "page" : undefined}>Events</Link>}
+          {ready && user !== null && user.role !== "admin" && (
+            <>
+              <Link href="/bookings" aria-current={pathname === "/bookings" ? "page" : undefined}>My bookings</Link>
+            </>
+          )}
+          {ready && user?.role === "admin" && !onAdminPage && (
+            <>
+              <Link href="/admin">Admin</Link>
+            </>
+          )}
+          {ready && user !== null && (
+            <>
+              <span className="nav-identity">
+                {user.email} ({user.role})
+              </span>
+              <button className="nav-logout" type="button" onClick={() => void handleLogout()}>
+                Log out
+              </button>
+            </>
+          )}
+          {ready && user === null && (
+            <>
+              <Link href="/login" aria-current={pathname === "/login" ? "page" : undefined}>Log in</Link>
+              <Link className="button button-primary" href="/register">Sign up</Link>
+            </>
+          )}
+        </div>
+      </nav>
+    </header>
   );
 }

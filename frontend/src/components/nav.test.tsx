@@ -49,6 +49,24 @@ function renderNav() {
 }
 
 describe("role-aware navigation", () => {
+  it("gives visitors a home brand and direct authentication links", async () => {
+    renderNav();
+    expect(screen.getByRole("link", { name: "EventBook" }).getAttribute("href")).toBe("/");
+    expect((await screen.findByRole("link", { name: "Log in" })).getAttribute("href")).toBe("/login");
+    expect(screen.getByRole("link", { name: "Sign up" }).getAttribute("href")).toBe("/register");
+  });
+
+  it("routes the brand to management once an admin session is restored", async () => {
+    pathnameState.value = "/admin";
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.me.mockResolvedValue({ id: "u-9", email: "boss@example.com", role: "admin" });
+    renderNav();
+    await screen.findByRole("button", { name: "Log out" });
+    expect(screen.getByRole("link", { name: "EventBook" }).getAttribute("href")).toBe("/admin");
+    expect(screen.queryByRole("link", { name: "Sign up" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Events" })).toBeNull();
+  });
+
   it("shows Events without Admin to visitors", async () => {
     renderNav();
     await screen.findByText("Events");

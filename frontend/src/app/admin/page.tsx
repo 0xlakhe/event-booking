@@ -45,7 +45,7 @@ function isStarted(startsAt: string): boolean {
 
 export default function AdminPage() {
   return (
-    <Suspense fallback={<p>Loading admin…</p>}>
+    <Suspense fallback={<main><p className="empty-state" role="status">Loading admin…</p></main>}>
       <Admin />
     </Suspense>
   );
@@ -235,7 +235,10 @@ function Admin() {
 
   return (
     <main>
-      <h1>Admin events</h1>
+      <header className="page-heading">
+        <h1>Admin events</h1>
+        <p>Bring people together. Manage your events and see who’s joining.</p>
+      </header>
       {ready && authError !== null && (
         <p role="alert">
           {authError}{" "}
@@ -244,7 +247,7 @@ function Admin() {
           </button>
         </p>
       )}
-      {!ready && <p>Loading…</p>}
+      {!ready && <p className="empty-state" role="status">Loading…</p>}
       {ready && user === null && (
         <p>
           <Link href="/login">Log in</Link> as an admin to manage events.
@@ -252,13 +255,12 @@ function Admin() {
       )}
       {ready && user !== null && user.role !== "admin" && (
         <p role="alert">
-          Admin access required. Backend protections remain authoritative — this page
-          discloses nothing without an admin session.
+          Admin access required. Log in with an admin account to manage events.
         </p>
       )}
       {ready && user?.role === "admin" && (
         <>
-          <form
+          <form className="admin-toolbar" role="search"
             onSubmit={(e) => {
               e.preventDefault();
               setDraft(draft);
@@ -274,13 +276,13 @@ function Admin() {
             />{" "}
             <button type="submit">Search</button>{" "}
             {!creating && editing === null && (
-              <button type="button" onClick={() => setCreating(true)}>
+              <button className="button-primary" type="button" onClick={() => setCreating(true)}>
                 New event
               </button>
             )}
           </form>
 
-          <div role="group" aria-label="Filter events by time">
+          <div className="filter-tabs" role="group" aria-label="Filter events by time">
             {TIME_FILTERS.map((option) => (
               <button
                 key={option.value}
@@ -295,7 +297,7 @@ function Admin() {
             ))}
           </div>
 
-          {state === "pending" && <p>Loading events…</p>}
+          {state === "pending" && <p className="empty-state" role="status">Loading events…</p>}
           {state === "error" && (
             <p role="alert">
               {failure}{" "}
@@ -304,11 +306,11 @@ function Admin() {
               </button>
             </p>
           )}
-          {state === "empty" && <p>No events found.</p>}
+          {state === "empty" && <p className="empty-state">No events found.</p>}
           {failure !== null && state !== "error" && <p role="alert">{failure}</p>}
 
           {creating && (
-            <div className="card">
+            <div className="card form-panel">
               <h2>New event</h2>
               <EventForm
                 pending={saving}
@@ -320,16 +322,15 @@ function Admin() {
             </div>
           )}
 
-          <ul>
+          <ul className="admin-list">
             {items.map((event) => (
-              <li key={event.id} className="card">
-                <strong>{event.title}</strong>
-                <br />
-                <span className="muted">
-                  {event.venue} ·{" "}
-                  <span title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</span> ·{" "}
-                  {event.seats_left} / {event.total_seats} seats left
-                </span>
+              <li key={event.id} className="card admin-card">
+                <h2>{event.title}</h2>
+                <div className="admin-meta">
+                  <span>{event.venue}</span>
+                  <time dateTime={event.starts_at} title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</time>
+                  <span>{event.seats_left} / {event.total_seats} seats left</span>
+                </div>
                 <EventDescription key={event.description} description={event.description} />
                 {editing?.id === event.id ? (
                   <EventForm
@@ -341,9 +342,9 @@ function Admin() {
                     onCancel={() => setEditing(null)}
                   />
                 ) : (
-                  <>
+                  <div className="admin-actions">
                     {!isStarted(event.starts_at) && (
-                      <p>
+                      <p className="button-row">
                         <button type="button" disabled={saving} onClick={() => void startEdit(event.id)}>
                           Edit
                         </button>{" "}
@@ -352,33 +353,32 @@ function Admin() {
                         </button>
                       </p>
                     )}
-                    <p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (attendeesFor === event.id) setAttendeesFor(null);
-                          else void loadAttendees(event.id, 1);
-                        }}
-                      >
-                        {attendeesFor === event.id ? "Hide attendees" : "Attendees"}
-                      </button>
-                    </p>
-                  </>
+                    <button
+                      type="button"
+                      aria-expanded={attendeesFor === event.id}
+                      onClick={() => {
+                        if (attendeesFor === event.id) setAttendeesFor(null);
+                        else void loadAttendees(event.id, 1);
+                      }}
+                    >
+                      {attendeesFor === event.id ? "Hide attendees" : "Attendees"}
+                    </button>
+                  </div>
                 )}
                 {attendeesFor === event.id && (
-                  <div>
+                  <div className="attendee-panel">
                     <h3>Attendees ({attendeesTotal})</h3>
                     {attendees.length === 0 && <p className="muted">No active bookings.</p>}
-                    <ul>
+                    <ul className="attendee-list">
                       {attendees.map((entry) => (
                         <li key={entry.booking_id}>
-                          {entry.user.email} ·{" "}
-                          <span title={NEPAL_LABEL}>{formatNepal(entry.booked_at)}</span>
+                          <span>{entry.user.email}</span>
+                          <time dateTime={entry.booked_at} title={NEPAL_LABEL}>{formatNepal(entry.booked_at)}</time>
                         </li>
                       ))}
                     </ul>
                     {attendeePages > 1 && (
-                      <p>
+                      <p className="button-row">
                         <button
                           type="button"
                           disabled={attendeesPage <= 1}
@@ -400,18 +400,20 @@ function Admin() {
               </li>
             ))}
           </ul>
-          <p className="muted">
-            Page {page} of {pages} ({total} events)
-          </p>
-          <p>
-            <button type="button" disabled={page <= 1} onClick={() => go(page - 1)}>
-              Previous
-            </button>{" "}
-            <button type="button" disabled={page >= pages} onClick={() => go(page + 1)}>
-              Next
-            </button>
-          </p>
-          <p className="muted">All times shown in {NEPAL_LABEL}.</p>
+          <div className="pagination">
+            <p className="muted">
+              Page {page} of {pages} ({total} events)
+            </p>
+            <p className="button-row">
+              <button type="button" disabled={page <= 1} onClick={() => go(page - 1)}>
+                Previous
+              </button>{" "}
+              <button type="button" disabled={page >= pages} onClick={() => go(page + 1)}>
+                Next
+              </button>
+            </p>
+          </div>
+          <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
         </>
       )}
     </main>

@@ -69,7 +69,7 @@ export default function EventForm({
   );
 
   return (
-    <form onSubmit={submit}>
+    <form className="event-form" onSubmit={submit}>
       {field(
         "Title",
         <input value={title} disabled={pending} onChange={(e) => setTitle(e.target.value)} required />,
@@ -105,8 +105,8 @@ export default function EventForm({
         />,
       )}
       {(localError ?? failure) !== null && <p role="alert">{localError ?? failure}</p>}
-      <p>
-        <button type="submit" disabled={pending}>
+      <p className="button-row">
+        <button className="button-primary" type="submit" disabled={pending}>
           {pending ? "Saving…" : submitLabel}
         </button>{" "}
         {onCancel && (

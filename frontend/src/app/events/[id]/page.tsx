@@ -41,7 +41,7 @@ async function findActiveBooking(
   eventId: string,
 ): Promise<"confirmed" | "absent"> {
   let page = 1;
-  for (;;) {
+  for (; ;) {
     const history = await api.myBookings(token, page, HISTORY_PAGE_SIZE);
     if (
       history.items.some(
@@ -59,7 +59,7 @@ async function findActiveBooking(
 
 export default function EventDetailPage() {
   return (
-    <Suspense fallback={<p>Loading event…</p>}>
+    <Suspense fallback={<main><p className="empty-state" role="status">Loading event…</p></main>}>
       <Detail />
     </Suspense>
   );
@@ -184,7 +184,7 @@ function Detail() {
     }
   }
 
-  if (state === "pending") return <p>Loading event…</p>;
+  if (state === "pending") return <main><p className="empty-state" role="status">Loading event…</p></main>;
   if (state === "error" || event === null) {
     return (
       <main>
@@ -214,40 +214,46 @@ function Detail() {
 
   return (
     <main>
-      <p>
-        <Link href="/">Back to events</Link>
-      </p>
-      <h1>{event.title}</h1>
-      <p>{event.description}</p>
-      <p className="muted">
-        {event.venue} · <span title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</span> ·{" "}
-        {event.seats_left} / {event.total_seats} seats left
-      </p>
-      <p className="muted">All times shown in {NEPAL_LABEL}.</p>
+      <Link className="back-link" href="/">Back to events</Link>
+      <div className="detail-grid">
+        <div className="detail-copy">
+          <h1>{event.title}</h1>
+          <p className="event-description">{event.description}</p>
+        </div>
+        <aside className="booking-panel" aria-label="Event details and booking">
+          <dl className="event-facts">
+            <div><dt>When</dt><dd><time dateTime={event.starts_at} title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</time></dd></div>
+            <div><dt>Where</dt><dd>{event.venue}</dd></div>
+            <div><dt>Availability</dt><dd>{event.seats_left} / {event.total_seats} seats left</dd></div>
+          </dl>
+          <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
 
-      {ready && user === null && (
-        <p>
-          <Link href="/login">Log in</Link> to book a seat.
-        </p>
-      )}
-      {ready && user !== null && user.role !== "admin" && (
-        <p>
-          <button
-            type="button"
-            disabled={phase.kind === "booking" || phase.kind === "verifying" || full || started}
-            onClick={() => void book()}
-          >
-            {bookLabel}
-          </button>
-        </p>
-      )}
-      {started && (
-        <p className="muted">
-          This event has already started and can no longer be booked.
-        </p>
-      )}
-      {phase.kind === "verifying" && <p role="status">{phase.message}</p>}
-      {phase.kind === "failed" && <p role="alert">{phase.message}</p>}
+          {ready && user === null && (
+            <p>
+              <Link className="button button-primary" href="/login">Log in</Link> <span className="booking-signin-note">to book a seat.</span>
+            </p>
+          )}
+          {ready && user !== null && user.role !== "admin" && (
+            <p>
+              <button
+                className="button-primary"
+                type="button"
+                disabled={phase.kind === "booking" || phase.kind === "verifying" || full || started}
+                onClick={() => void book()}
+              >
+                {bookLabel}
+              </button>
+            </p>
+          )}
+          {started && (
+            <p className="muted">
+              This event has already started and can no longer be booked.
+            </p>
+          )}
+          {phase.kind === "verifying" && <p role="status">{phase.message}</p>}
+          {phase.kind === "failed" && <p role="alert">{phase.message}</p>}
+        </aside>
+      </div>
     </main>
   );
 }

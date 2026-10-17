@@ -33,48 +33,54 @@ export default function LoginPage() {
   }
 
   return (
-    <main>
-      <h1>Log in</h1>
-      <form onSubmit={onSubmit}>
-        <p>
-          <label>
-            Email
-            <br />
-            <input
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              disabled={pending}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </label>
+    <main className="auth-page">
+      <div className="auth-intro">
+        <h1>Welcome back.</h1>
+        <p className="muted">Your next experience is waiting. Log in to book a seat and manage your plans.</p>
+      </div>
+      <div className="auth-panel">
+        <h2>Log in</h2>
+        <form onSubmit={onSubmit}>
+          <p>
+            <label>
+              Email
+              <br />
+              <input
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                disabled={pending}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+          </p>
+          <p>
+            <label>
+              Password
+              <br />
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                minLength={8}
+                value={password}
+                disabled={pending}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+          </p>
+          {failure !== null && <p role="alert">{failure}</p>}
+          <p>
+            <button className="button-primary" type="submit" disabled={pending}>
+              {pending ? "Logging in…" : "Log in"}
+            </button>
+          </p>
+        </form>
+        <p className="muted">
+          No account yet? <Link href="/register">Sign up</Link>
         </p>
-        <p>
-          <label>
-            Password
-            <br />
-            <input
-              type="password"
-              autoComplete="current-password"
-              required
-              minLength={8}
-              value={password}
-              disabled={pending}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-        </p>
-        {failure !== null && <p role="alert">{failure}</p>}
-        <p>
-          <button type="submit" disabled={pending}>
-            {pending ? "Logging in…" : "Log in"}
-          </button>
-        </p>
-      </form>
-      <p className="muted">
-        No account yet? <Link href="/register">Register</Link>
-      </p>
+      </div>
     </main>
   );
 }
