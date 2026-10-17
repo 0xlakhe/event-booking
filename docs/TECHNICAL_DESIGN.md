@@ -139,6 +139,22 @@ Never-overbook is mandatory. The brief lists the dedicated simultaneous-last-sea
 
 ## Time and frontend behavior
 
+The user-selected visual system uses cream/off-white surfaces and charcoal text,
+with thin borders and shared spacing across public, auth, booking, and admin
+pages. CSS tokens live in `frontend/src/app/globals.css`: paper `#f7f5ef`,
+surface `#fdfcf8`, ink `#292923`, muted text `#69685f`, borders `#d9d6cc`, and
+secondary surfaces `#eeece4`. Georgia headings and the locally available Avenir
+Next/Segoe UI sans-serif stack require no downloaded fonts or new dependencies.
+The homepage's short introduction links to the event list on the same page;
+event cards use two desktop columns and one phone column, with explicit date,
+venue, availability, and one View event action. The brand links home for visitors
+and normal users, and to management for admins. Visitor navigation includes Log
+in and Sign up; existing user/admin navigation and route guards remain intact.
+Forms, feedback, and pagination share the same controls, with visible keyboard
+focus, a skip link, reduced-motion support, and responsive stacking. This is a
+presentation follow-up to TASK-008; REST, session, and database contracts do not
+change.
+
 Store and compare instants in UTC. The event becomes ineligible when `starts_at <= database clock`. Reject timezone-naive API input. For the small app, present all dates and the admin form in **Nepal time**, visibly labeled `Asia/Kathmandu (UTC+05:45)`; convert the admin's local form value to an explicit `+05:45` timestamp before sending. Avoid interpreting `datetime-local` using the evaluator's device timezone. Return UTC, format explicitly in Nepal time, and use backend responses as the final authority.
 
 Proposed pages: upcoming events `/`, detail `/events/[id]`, `/register`, `/login`, `/bookings`, and `/admin` with event forms and attendee display. A simple responsive layout and small reusable forms suffice. Include all states required in `REQUIREMENTS.md`. Preserve search/page in URL parameters, reset page when search changes, and discard stale search responses. Route guards improve UX; backend permission checks remain decisive. Admins land on `/admin` after login, see no public Events navigation, and are redirected from public list/detail pages to management only after session restoration confirms their role. Upcoming and started admin cards show descriptions inline, with a three-line preview and accessible Read more/Read less controls only when the text overflows. Descriptions arrive in the paginated admin collection query, not per-card requests. Metadata appears once; there is no separate Details action or started-event notice. The admin list adds an Upcoming/Past/All time filter (Upcoming default) whose selection lives in a `time_filter` URL parameter so refresh and browser navigation preserve it; changing filters keeps the title search and resets to page one. Attendees stay reachable, and started events have no edit/delete controls; backend conflict messages still explain rejected mutations. The admin page carries no public-browsing link (no Back to events), since administration is a management-only flow; Logout comes from the shared navigation, and logging out from an admin route (`/admin` or `/admin/*`) returns the visitor to the public list `/` rather than leaving them on the admin "log in as an admin" prompt. Local state clears even when revocation fails, and the revocation warning stays visible on the destination page because it lives in shared auth state. These presentation choices are user-selected, not PDF mandates.

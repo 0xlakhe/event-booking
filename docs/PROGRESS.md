@@ -1885,3 +1885,58 @@ Date: 2026-10-17
   frontend, docs) and pushed `main` to `origin`
   (github.com/0xlakhe/event-booking).
 - Still not deployed; TASK-007 remains blocked on external access.
+
+---
+
+## Task: cream and charcoal frontend redesign
+Status: In progress
+Date: 2026-10-17
+
+Scope: explicitly authorized frontend implementation after the prior
+prompts-only preference. The user requested Astra; implementation is
+assigned to `gpt-6-astra` implementation agent Darwin
+(`01a1491d-120c-78b1-bec2-ca12e709fc85`). This is a focused visual follow-up
+to TASK-008, not authorization for TASK-009 or deployment.
+
+Design direction: cream/off-white surfaces, charcoal typography, thin
+borders, generous spacing, and a restrained monochrome interface. Public
+browsing keeps upcoming events on the homepage, with a short welcoming
+headline, an in-page Browse events action, and two-column desktop / one-column
+phone cards. Dates, venue, availability, and one View event action form each
+card's information hierarchy. The shared navigation and all auth, detail,
+booking, admin, form, attendee, and feedback states share the visual system.
+
+Constraints: preserve existing auth generations/readiness and storage
+safeguards, booking recovery and eligibility, role guards, admin time filters,
+URL search/pagination, description disclosure, and logout warnings/routing.
+No packages, backend/schema changes, database writes, seed changes, deployments,
+or production builds inside the running development container. The worktree
+was clean at the initial `git status --short` check.
+
+Verification pending: frontend regression suite, output-free typecheck,
+desktop/phone browser inspection, and a fresh independent reviewer. Browser
+checks use a separate anonymous preview tab and read-only navigation; existing
+user sessions and development records are not changed. Authenticated visual
+flows require an existing session or isolated fixtures and will be labeled
+according to actual evidence.
+
+Visual-check setup: actual admin React components rendered successfully in
+isolated jsdom with fake auth/API data to `/private/tmp/eventbook-design-previews/`
+(listing, attendees, and form HTML). This makes no backend requests and changes
+no live session. Browser security rejected opening the `file:` preview and
+explicitly prohibited a workaround; it was not retried through another route.
+These snapshots are not browser visual evidence. The existing Brave session is
+a normal-user bookings view, available for read-only inspection; no existing
+admin session has been found.
+
+Commit-check note (2026-10-17, commit/push step): the first full suite run
+was red — `src/app/page.test.tsx` > "event discovery" failed because the
+card link rendered the accessible name "View event" while the test (and the
+one-action-per-card intent, since every card would otherwise expose the
+same name) requires "View event: <title>". Fixed by adding
+`aria-label={`View event: ${event.title}`}` to the card link; no other
+behavior touched. Re-run: `docker compose exec -T frontend npm test -- --run`
+→ 9 files / 74 passed; `docker compose exec -T frontend npm run typecheck` →
+clean (no output). Browser inspection and the fresh independent reviewer
+are still pending, so this work remains In progress. Committed and pushed
+with the redesign docs.
