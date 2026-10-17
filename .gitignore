@@ -22,6 +22,9 @@ out/
 # Docker data (volumes hold real data; this is only for stray local dirs)
 postgres_data/
 
+# Vercel project linkage (created by `vercel link`/`vercel dev`; never commit)
+.vercel
+
 # OS / editors
 .DS_Store
 .idea/
