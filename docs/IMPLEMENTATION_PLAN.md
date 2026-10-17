@@ -164,6 +164,8 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 - [ ] With deployment authorization and accounts, deploy a first version to the proposed hosts or recorded alternatives; provision Supabase roles/private schema, apply migrations explicitly, seed accounts, and confirm compatible PostgreSQL version, TLS, pool limits, exposed-schema isolation, and readiness. Run seed/migrations as one release action, not worker startup.
 - [ ] Verify live listing and login with both accounts; record app/API URLs, deployed revision, seed verification, cold-start behavior, and missing flows in README/evidence. **Done:** working deployed initial slice is accessible; it is not yet final acceptance. If external access is unavailable, record the exact block, keep this task incomplete, and continue TASK-008 locally. A local build never satisfies compulsory deployment.
 
+**Repo-side preparation (2026-10-17, not deployment):** `vercel.json` declares both Vercel Services in one project (nextjs `frontend/`, fastapi `backend/`); `/api/*` and `/health` route to the backend and everything else to the frontend, preserving the direct same-origin browser-to-API path. README records project setup, environment values, pre-deploy migration/seed commands and verification steps. The task stays Blocked until the accounts and authorization above exist; nothing is deployed.
+
 #### TASK-008 execution
 
 **Files:** `frontend/src/app/events/[id]/page.tsx`, `frontend/src/app/bookings/page.tsx`, `frontend/src/app/admin/page.tsx`, `frontend/src/components/event-form.tsx`, `frontend/src/lib/datetime.ts`; update listing/layout/auth/client files and shared styles. Split further only if needed for clear responsibility.

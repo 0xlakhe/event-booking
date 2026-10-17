@@ -1940,3 +1940,122 @@ behavior touched. Re-run: `docker compose exec -T frontend npm test -- --run`
 clean (no output). Browser inspection and the fresh independent reviewer
 are still pending, so this work remains In progress. Committed and pushed
 with the redesign docs.
+
+---
+
+## Task: Vercel Services deployment configuration
+Status: Yes (independent review accepted 2026-10-17; nothing deployed)
+Date: 2026-10-17
+Scope (user-authorized): configure the repository for one Vercel project
+with two Services — `frontend/` (Next.js) and `backend/` (FastAPI) — per
+the current Vercel Services documentation. Repository configuration only:
+nothing was deployed, no Vercel/Supabase account is used, and TASK-007
+stays Blocked.
+
+Changed:
+- `vercel.json` (new): services `backend` (`root: "backend/"`, framework
+  `fastapi`, entrypoint `app.main:app`) and `frontend` (`root:
+  "frontend/"`, framework `nextjs`); rewrites expose `/api/(.*)` and
+  `/health` to the backend and `/(.*)` to the frontend. Services are
+  private by default; a rewrite forwards the original path, so FastAPI
+  keeps its existing `/api/...` routes, `/docs`/`/openapi.json` stay
+  private, and the browser keeps a direct same-origin browser-to-API
+  path (the design contract) with no CORS and no Next.js proxy.
+- `README.md`: Vercel Services runbook (project preset, environment
+  values, pre-deploy migrations/seed, deploy and verification commands,
+  preview-database caveat); status note and missing-inputs list updated.
+- `.gitignore`: ignore `.vercel` project linkage created by `vercel
+  link`/`vercel dev` (linkage must never be committed).
+- `.env.example`: production note now points at the same-origin `/api`
+  value and the Vercel project (frontend holds no secrets).
+- `docs/TECHNICAL_DESIGN.md`: chosen hosts, routing/path-preservation
+  and pool-sizing notes; the pool rationale no longer calls the backend
+  "long-lived" because Vercel functions are not.
+- `docs/IMPLEMENTATION_PLAN.md`: TASK-007 repo-side preparation note
+  (status remains Blocked).
+- `docs/PROGRESS.md`: this entry.
+
+Deviations from the provided draft (declared a starting point):
+- explicit `entrypoint: "app.main:app"` (auto-detection supports
+  `app/main.py`, but the documented multi-service template sets the
+  entrypoint explicitly);
+- canonical trailing-slash roots (`"backend/"`, `"frontend/"`);
+- `/health` rewrite added so the existing readiness probe is reachable
+  on the deployed origin;
+- no service binding — the browser calls FastAPI directly through the
+  same-origin rewrite, matching the repository's "no Next.js proxy"
+  design; bindings are only needed for server-side calls.
+
+Evidence (actual runs, 2026-10-17):
+- `python3 -m json.tool vercel.json` → valid JSON.
+- Schema validation: fetched the live `https://openapi.vercel.sh/vercel.json`
+  (draft-04, 428,742 bytes) and validated `vercel.json` with `jsonschema`
+  4.26.0 in a throwaway venv → no errors ("validates against the published
+  Vercel schema (draft-04): OK"). The schema's service object allows
+  exactly the keys used (`root` required; `framework`, `entrypoint`) and
+  its rewrite destination accepts `{ "service": ... }`.
+- Field-by-field cross-check against current Vercel documentation, all
+  re-fetched during this task: Services + Services routing (private by
+  default; top-level rewrites expose; destination `service`; original
+  path forwarded), Service configuration reference (allowed service
+  keys), FastAPI (entrypoints include `app/main.py`; explicit
+  `entrypoint`), Python runtime (`pyproject.toml` dependencies supported
+  with or without `uv.lock`; Python 3.12 default; `requires-python`
+  honored), and the Python + Next.js Services KB guide (Services preset,
+  root directory = repository root, bindings only for server-side calls).
+- No application code changed; frontend suite/typecheck and backend
+  pytest were not rerun because this change cannot affect them (config
+  and documentation only) — the schema validation above is the
+  behavior-relevant check.
+
+Limitations:
+- Nothing deployed: no Vercel or Supabase account exists (TASK-007's
+  blocking condition), so the configuration is static evidence only.
+  Vercel Services is Beta; re-verify the live contract (Services preset,
+  routing, env values) when the project is actually created.
+- Preview-database isolation is documented, not exercised.
+
+Review (independent, read-only subagent session
+`ses_eb6b15b4bffevP5unxwjEE7dm1`, 2026-10-17):
+- Round 1. The reviewer reproduced this entry's schema validation
+  (jsonschema 4.26.0, live draft-04 schema, sha256 `794e937a…`),
+  re-fetched the Vercel Services/routing/config-reference/FastAPI/
+  Python-runtime docs plus the Python+Next.js Services KB guide and
+  Supabase pooler docs, and read the code paths the config depends on
+  (`main.py`, `config.py`, `bootstrap_local.py`, `seed.py`,
+  `compose.yaml`, frontend pages). `vercel.json`, the routing design,
+  and change hygiene: PASS, no blocking findings. Findings: 1
+  **BLOCKING** — the runbook claimed "the existing bootstrap creates the
+  hosted roles", but `bootstrap_local.py` provisions only the Compose
+  dev/test databases, so the documented migration step could not run on
+  Supabase; 5 MINOR — (2) a Preview without `DATABASE_URL` fails at
+  import (500, not readiness 503); (3) Vercel scopes env vars to the
+  project, so the frontend service's environment also holds
+  `DATABASE_URL` and the isolation wording overstated; (4) one-off tools
+  runs still need a populated `.env`, and release seed passwords must be
+  exported; (5) shared-pooler usernames must be `<role>.<project-ref>`;
+  (6) non-secret env adds should use `--no-sensitive` per the KB guide.
+- Corrections (docs-only; no application code). README runbook: hosted
+  provisioning restated as open TASK-007 work with its required
+  contents and an "adapt grants, don't copy the local revokes onto the
+  shared database" clause; step 2 gained the populated-`.env`
+  precondition and exports `MIGRATION_DATABASE_URL` plus release
+  `SEED_*` passwords; the preview bullet and step 3 give the accurate
+  failure mode and conditional database; the env block uses
+  `--sensitive`/`--no-sensitive` and documents the pooler username
+  format. `docs/TECHNICAL_DESIGN.md` Frontend row and the `.env.example`
+  production note qualify the project-scoped env sharing.
+- Round 2 recheck: all six findings resolved, no blocking findings
+  remain. Reviewer evidence: `vercel.json` byte-identical and
+  revalidated; a temp-copy step-2 simulation (`docker compose --env-file
+  <temp .env.example> --profile tools config --format json` with the
+  exports) exited 0 and showed shell exports overriding the env file —
+  no containers started, no database touched; a frontend `process.env`
+  grep confirmed only `NEXT_PUBLIC_API_BASE_URL` is read. Two new MINOR
+  advisories: the grants caveat (fixed in step 1) and this PROGRESS
+  bookkeeping (fixed here).
+- Outcome: reviewer accepted the corrections; entry complete. TASK-007
+  remains Blocked (accounts/authorization and hosted provisioning still
+  missing). Reviewer limitations: no live Vercel/Supabase verification
+  (by design); the 500-vs-503 behavior is code-derived, not executed.
+Next: stop for review. Do not deploy.

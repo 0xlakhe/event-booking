@@ -1,8 +1,9 @@
 # EventBook (TASK-007 early slice)
 
-> Status: release preparation complete (auth/browse frontend slice,
-> production images, release runbook); external deployment blocked on
-> missing hosting access — see Deployment below. No live URLs yet.
+> Status: release preparation complete (full frontend flows, production
+> images, Vercel Services deployment config, release runbook); external
+> deployment blocked on missing hosting access — see Deployment below.
+> No live URLs yet.
 
 ## What exists
 
@@ -28,6 +29,9 @@
   provider, `/login`, `/register`, browsable event list): header-only
   tokens in sessionStorage, hydration validation, loading/error/empty
   states. No Next API routes or Supabase access.
+- `vercel.json` deployment contract: one Vercel project with two
+  Services (`frontend/` nextjs, `backend/` fastapi); `/api/*` and
+  `/health` rewrite to FastAPI, everything else to Next.js.
 
 ## Trade-offs (capacity, deletion, time)
 
@@ -96,40 +100,126 @@ docker compose --profile tools run --rm tools pytest
 - Admin: `admin@example.com` / `SEED_ADMIN_PASSWORD` from `.env`
 - User: `user@example.com` / `SEED_USER_PASSWORD` from `.env`
 
-## Deployment (release preparation; not yet deployed)
+## Deployment (Vercel Services; not yet deployed)
 
-Production images: `backend/Dockerfile` target `prod` (single uvicorn
-worker, no reload) and `frontend/Dockerfile` target `prod`
-(`next build` baked in, `next start`). Compose pins `target: dev`;
-build release images explicitly, e.g.
-`docker build --target prod -t eventbook-backend:release ./backend` and
-`docker build --target prod --build-arg
-NEXT_PUBLIC_API_BASE_URL=https://api.example.com/api -t
+Production images (local release artifacts; unchanged by the Vercel
+config): `backend/Dockerfile` target `prod` (single uvicorn worker, no
+reload) and `frontend/Dockerfile` target `prod` (`next build` baked in,
+`next start`). Compose pins `target: dev`; build release images
+explicitly, e.g. `docker build --target prod -t
+eventbook-backend:release ./backend` and `docker build --target prod
+--build-arg NEXT_PUBLIC_API_BASE_URL=/api -t
 eventbook-frontend:release ./frontend`.
 
-Production environment (backend only; never the frontend):
-`DATABASE_URL` with the Supabase **session-mode pooler** URL and the
-limited runtime role, `ALLOWED_ORIGINS` set to the exact deployed
-frontend origin (CORS is checked exactly — a missing origin fails
-closed, as observed locally), `EXPECTED_ALEMBIC_REVISION=0001_initial`.
-Frontend gets only `NEXT_PUBLIC_API_BASE_URL` (deployed HTTPS API URL,
-baked at image build time).
+### One Vercel project, two services
 
-Release as one authorized action (not worker startup), in order:
-bootstrap roles → `alembic upgrade head` via `MIGRATION_DATABASE_URL` →
-`python -m app.seed` → verify `/health` 200, both demo logins, and the
-event list. Supabase specifics to confirm on the project: PostgreSQL
-major version, TLS, pool limits, `eventbook` schema kept out of the
-Data API exposed list, and `anon`/`authenticated` with no eventbook
-grants. Keep the release live two weeks after submission; document the
-backend sleep behavior here if the host sleeps.
+`vercel.json` (validated against `https://openapi.vercel.sh/vercel.json`)
+deploys both services from one Vercel project:
+
+- `frontend/` — Next.js; publicly reachable for every path except the
+  backend rules below.
+- `backend/` — FastAPI, entrypoint `app.main:app`; reachable only via
+  the `/api/*` and `/health` rewrites. Services are private unless a
+  top-level rewrite exposes them, so `/docs`, `/redoc` and
+  `/openapi.json` never become public routes, and no service binding is
+  used because Next.js never calls FastAPI server-side.
+
+A service rewrite forwards the original path, so FastAPI sees its
+existing `/api/...` routes and the browser keeps a direct same-origin
+browser-to-API HTTPS path (the design's requirement) with no CORS setup
+and no Next.js proxy.
+
+One-time project setup (Root Directory = repository root; framework
+preset **Services**):
+
+```sh
+vercel link
+vercel project update --framework services
+vercel env add NEXT_PUBLIC_API_BASE_URL production --no-sensitive   # /api
+vercel env add NEXT_PUBLIC_API_BASE_URL preview --no-sensitive      # /api
+vercel env add DATABASE_URL production --sensitive                  # postgresql+psycopg://<role>.<project-ref>@<pooler-host>/postgres?sslmode=require
+vercel env add APP_ENV production --no-sensitive                    # production
+vercel env add ALLOWED_ORIGINS production --no-sensitive            # https://<project>.vercel.app
+vercel env add EXPECTED_ALEMBIC_REVISION production --no-sensitive  # 0001_initial
+vercel env add DB_POOL_SIZE production --no-sensitive               # e.g. 2
+# Preview, only when it gets its own Supabase project/branch:
+vercel env add DATABASE_URL preview --sensitive
+```
+
+- `DATABASE_URL` must keep the `postgresql+psycopg://` scheme (the
+  backend refuses other schemes) and use the Supabase **session-mode
+  pooler** host with the limited runtime role, never the migrator. Over
+  the shared pooler the username is `<role>.<project-ref>` (a bare role
+  name fails with "Tenant or user not found"). Supabase direct
+  `db.<ref>` hosts are IPv6-only (not reachable from Vercel functions);
+  keep `?sslmode=require` from the dashboard URL.
+- `DB_POOL_SIZE` bounds one warm function instance. Fluid compute
+  reuses instances, so keep it small (for example 2) to stay inside the
+  Supabase pooler's client limit; the Compose default of 5 remains for
+  the long-lived local backend.
+- Only `NEXT_PUBLIC_*` values are inlined into the browser bundle, so
+  `NEXT_PUBLIC_API_BASE_URL=/api` is the only value the browser sees
+  (public, inlined at build time; never a secret). Vercel scopes
+  variables to the project, not the service, so the backend's
+  `DATABASE_URL` also exists in the frontend service's build/runtime
+  environment; no frontend code reads it and it is never inlined unless
+  prefixed `NEXT_PUBLIC_`.
+- Preview deployments: add a Preview `DATABASE_URL` only with a
+  separate Supabase project/branch — pointing Preview at the production
+  database lets preview traffic mutate live data. With no Preview
+  `DATABASE_URL` the backend fails at import (a 500), because settings
+  load when the function initializes; the sanitized 503 applies only
+  when the URL is set but the database is unreachable.
+
+### Release order (one authorized action; not app or worker startup)
+
+1. **Supabase provisioning — still open TASK-007 work.** The local
+   bootstrap (`python -m app.bootstrap_local`) only provisions the
+   Compose databases (`eventbook_dev`/`eventbook_test`) and their
+   roles; it does not prepare hosted Postgres. Before any hosted
+   migration can run, the release must create/confirm on the Supabase
+   project: the `eventbook_migrator` and `eventbook_runtime` login roles
+   with their passwords, CONNECT/CREATE grants on the target database
+   (`postgres` unless a dedicated database is created), the empty
+   `eventbook` schema owned by the migrator, and
+   `anon`/`authenticated`/`service_role` with no eventbook access. Adapt
+   the hosted grants to the platform rather than copying the local
+   `REVOKE ... FROM PUBLIC` and platform-role revokes onto the shared
+   `postgres` database. Until that exists, step 2 cannot succeed on
+   Supabase; implement it (script or documented manual steps) as part of
+   TASK-007.
+2. Migrations and seed from a machine that can reach Supabase and has a
+   populated `.env` (Compose still requires the `.env` role/test/seed
+   values even for one-off tools runs). Exported values override
+   `.env`; export the release seed passwords too, so hosted demo
+   accounts do not inherit the local placeholder passwords.
+
+   ```sh
+   export MIGRATION_DATABASE_URL='postgresql+psycopg://<migrator>.<project-ref>@<pooler-host>/postgres?sslmode=require'
+   export SEED_ADMIN_PASSWORD='<release secret>'
+   export SEED_USER_PASSWORD='<release secret>'
+   docker compose --profile tools run --rm tools alembic upgrade head
+   docker compose --profile tools run --rm tools python -m app.seed
+   ```
+
+3. `vercel deploy` (Preview) → check the Preview frontend (and
+   `vercel curl /api/health --deployment <url>` — it handles Deployment
+   Protection — once Preview has its own database) → `vercel deploy
+   --prod` → verify `/api/health` (or `/health`) returns 200 with schema
+   ready, both demo logins work, and the event list renders on the live
+   URL.
+
+Supabase specifics to confirm on the project: PostgreSQL major version,
+TLS, pool limits, `eventbook` schema kept out of the Data API exposed
+list, and `anon`/`authenticated` with no eventbook grants. Keep the
+release live two weeks after submission; record observed cold-start
+behavior here once a live URL exists.
 
 Missing before any external deployment (no access exists yet): a
-Supabase project (URL + DB password + pooler URL), frontend host
-(Vercel/Netlify or alternative) and backend host (Render/Railway or
-alternative) accounts, GitHub repository + evaluator access, and human
-authorization for each external step. Nothing has been deployed; there
-are no live URLs.
+Supabase project (URL + DB password + pooler URL), a Vercel account
+with this repository imported as a Services project, GitHub repository
++ evaluator access, and human authorization for each external step.
+Nothing has been deployed; there are no live URLs.
 
 ## Data persistence
 
