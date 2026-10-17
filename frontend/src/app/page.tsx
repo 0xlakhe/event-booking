@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError, api, type EventSummary } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -14,68 +15,107 @@ function seatsLabel(event: EventSummary): string {
 }
 
 export default function Home() {
-  const { user, ready, expired, logout, markSessionExpired } = useAuth();
-  const [query, setQuery] = useState("");
-  const [submitted, setSubmitted] = useState("");
-  const [page, setPage] = useState(1);
+  return (
+    <Suspense fallback={<p>Loading events…</p>}>
+      <Listing />
+    </Suspense>
+  );
+}
+
+function Listing() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const { user, ready, expired, error: authError, markSessionExpired, clearError } = useAuth();
+
+  const query = params.get("q") ?? "";
+  const page = Math.max(1, Number.parseInt(params.get("page") ?? "1", 10) || 1);
+  const [draft, setDraft] = useState(query);
   const [items, setItems] = useState<EventSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [state, setState] = useState<"pending" | "ready" | "error" | "empty">("pending");
   const [failure, setFailure] = useState<string | null>(null);
+  const requestId = useRef(0);
 
-  const load = useCallback(async (q: string, p: number) => {
+  useEffect(() => setDraft(query), [query]);
+
+  const load = useCallback(async () => {
+    const id = ++requestId.current;
     setState("pending");
     setFailure(null);
     try {
-      const body = await api.listEvents(q, p, PAGE_SIZE);
+      const body = await api.listEvents(query, page, PAGE_SIZE);
+      // Discard stale responses: only the latest query may render.
+      if (requestId.current !== id) return;
       setItems(body.items);
       setTotal(body.total);
       setState(body.items.length === 0 ? "empty" : "ready");
     } catch (err: unknown) {
+      if (requestId.current !== id) return;
       if (err instanceof ApiRequestError && err.status === 401) markSessionExpired();
       setState("error");
       setFailure(err instanceof ApiRequestError ? err.message : "Could not load events.");
     }
-  }, [markSessionExpired]);
+  }, [query, page, markSessionExpired]);
 
   useEffect(() => {
-    void load(submitted, page);
-  }, [load, submitted, page]);
+    // Management-only admins work in /admin. Redirect only after session
+    // restoration knows the role; redirecting earlier would bounce an
+    // admin away on every reload before hydration finishes.
+    if (!ready) return;
+    if (user?.role === "admin") {
+      router.replace("/admin");
+      return;
+    }
+    void load();
+  }, [ready, user, load, router]);
+
+  function search(next: string) {
+    const trimmed = next.trim();
+    const target = trimmed === "" ? "/" : `/?q=${encodeURIComponent(trimmed)}`;
+    setDraft(next);
+    router.push(target);
+  }
+
+  function go(nextPage: number) {
+    const search = new URLSearchParams();
+    if (query !== "") search.set("q", query);
+    if (nextPage > 1) search.set("page", String(nextPage));
+    const suffix = search.toString();
+    router.push(suffix === "" ? "/" : `/?${suffix}`);
+  }
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <main>
       <h1>EventBook</h1>
-      <p className="muted">
-        {ready && user !== null ? (
-          <>
-            Signed in as {user.email} ({user.role}).{" "}
-            <button type="button" onClick={() => void logout()}>
-              Log out
-            </button>
-          </>
-        ) : (
-          <>
-            <Link href="/login">Log in</Link> or <Link href="/register">register</Link> to book seats.
-          </>
-        )}
-      </p>
+      {ready && user === null && (
+        <p className="muted">
+          <Link href="/login">Log in</Link> or <Link href="/register">register</Link> to book seats.
+        </p>
+      )}
       {ready && expired && <p role="alert">Your session expired. Please log in again.</p>}
+      {ready && authError !== null && (
+        <p role="alert">
+          {authError}{" "}
+          <button type="button" onClick={clearError}>
+            Dismiss
+          </button>
+        </p>
+      )}
 
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          setPage(1);
-          setSubmitted(query.trim());
+          search(draft);
         }}
       >
         <input
           type="search"
           placeholder="Search events by title"
           aria-label="Search events by title"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
         />{" "}
         <button type="submit">Search</button>
       </form>
@@ -84,7 +124,7 @@ export default function Home() {
       {state === "error" && (
         <p role="alert">
           {failure}{" "}
-          <button type="button" onClick={() => void load(submitted, page)}>
+          <button type="button" onClick={() => void load()}>
             Retry
           </button>
         </p>
@@ -95,7 +135,9 @@ export default function Home() {
           <ul>
             {items.map((event) => (
               <li key={event.id} className="card">
-                <strong>{event.title}</strong>
+                <Link href={`/events/${event.id}`}>
+                  <strong>{event.title}</strong>
+                </Link>
                 <br />
                 <span className="muted">
                   {event.venue} · {event.seats_left} / {event.total_seats} seats ·{" "}
@@ -108,17 +150,13 @@ export default function Home() {
             Page {page} of {pages} ({total} events)
           </p>
           <p>
-            <button
-              type="button"
-              disabled={page <= 1 || state === "pending"}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
+            <button type="button" disabled={page <= 1 || state === "pending"} onClick={() => go(page - 1)}>
               Previous
             </button>{" "}
             <button
               type="button"
               disabled={page >= pages || state === "pending"}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => go(page + 1)}
             >
               Next
             </button>

@@ -77,6 +77,24 @@ export interface Collection<T> {
   total: number;
 }
 
+export interface Booking {
+  id: string;
+  event: EventSummary;
+  created_at: string;
+  cancelled_at: string | null;
+}
+
+export interface AttendeeUser {
+  id: string;
+  email: string;
+}
+
+export interface Attendee {
+  booking_id: string;
+  user: AttendeeUser;
+  booked_at: string;
+}
+
 export interface LoginResult {
   access_token: string;
   token_type: string;
@@ -84,6 +102,73 @@ export interface LoginResult {
   user: User;
 }
 
+export interface EventInput {
+  title: string;
+  description: string;
+  /** Explicit-offset timestamp, e.g. 2030-01-01T10:00:00+05:45. */
+  starts_at: string;
+  venue: string;
+  total_seats: number;
+}
+
+export type EventPatch = Partial<EventInput>;
+
+export type TimeFilter = "upcoming" | "past" | "all";
+
+export const adminApi = {
+  listEvents(
+    token: string,
+    q: string,
+    timeFilter: TimeFilter,
+    page: number,
+    page_size = 10,
+  ): Promise<Collection<EventDetail>> {
+    const params = new URLSearchParams({
+      q,
+      time_filter: timeFilter,
+      page: String(page),
+      page_size: String(page_size),
+    });
+    return request<Collection<EventDetail>>(`/admin/events?${params.toString()}`, {
+      token,
+    });
+  },
+  createEvent(token: string, input: EventInput): Promise<EventDetail> {
+    return request<EventDetail>("/admin/events", {
+      method: "POST",
+      body: input,
+      token,
+    });
+  },
+  updateEvent(token: string, id: string, patch: EventPatch): Promise<EventDetail> {
+    return request<EventDetail>(`/admin/events/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: patch,
+      token,
+    });
+  },
+  deleteEvent(token: string, id: string): Promise<void> {
+    return request<void>(`/admin/events/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      token,
+    });
+  },
+  attendees(
+    token: string,
+    id: string,
+    page: number,
+    page_size = 10,
+  ): Promise<Collection<Attendee>> {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(page_size),
+    });
+    return request<Collection<Attendee>>(
+      `/admin/events/${encodeURIComponent(id)}/attendees?${params.toString()}`,
+      { token },
+    );
+  },
+};
 export const api = {
   register(email: string, password: string): Promise<User> {
     return request<User>("/auth/register", {
@@ -113,5 +198,24 @@ export const api = {
   },
   getEvent(id: string): Promise<EventDetail> {
     return request<EventDetail>(`/events/${encodeURIComponent(id)}`);
+  },
+  createBooking(eventId: string, token: string): Promise<Booking> {
+    return request<Booking>(`/events/${encodeURIComponent(eventId)}/bookings`, {
+      method: "POST",
+      token,
+    });
+  },
+  myBookings(token: string, page: number, page_size = 10): Promise<Collection<Booking>> {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(page_size),
+    });
+    return request<Collection<Booking>>(`/bookings/me?${params.toString()}`, { token });
+  },
+  cancelBooking(bookingId: string, token: string): Promise<void> {
+    return request<void>(`/bookings/${encodeURIComponent(bookingId)}`, {
+      method: "DELETE",
+      token,
+    });
   },
 };

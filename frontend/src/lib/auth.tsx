@@ -3,22 +3,23 @@
 /* Session auth state: token in sessionStorage, validated on hydration.
    Never logged, never placed in URLs. 401 anywhere clears the session. */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ApiRequestError, api, type User } from "./api";
-
-const STORAGE_KEY = "eventbook.token";
+import { dropToken, readToken, writeToken } from "./token_store";
 
 interface AuthState {
   user: User | null;
   ready: boolean;
   expired: boolean;
   error: string | null;
-  login(email: string, password: string): Promise<void>;
+  login(email: string, password: string): Promise<User>;
   register(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
   markSessionExpired(): void;
   clearError(): void;
+  /** Current bearer token for API calls, or null when signed out. */
+  getToken(): string | null;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -33,6 +34,8 @@ export function friendlyAuthMessage(code: string, fallback: string): string {
       return "Your session has expired. Please log in again.";
     case "EVENT_FULL":
       return "This event is full.";
+    case "ADMIN_BOOKING_FORBIDDEN":
+      return "Booking actions are not available to administrators.";
     default:
       return fallback;
   }
@@ -43,37 +46,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Monotonic generation for auth operations. Every login, logout, or
+  // expiry starts a new generation and invalidates the continuations of
+  // earlier ones, so a slow restoration or logout for a previous account
+  // can neither overwrite a newer login nor clear its session.
+  const generation = useRef(0);
 
   const clearSession = useCallback(() => {
-    try {
-      sessionStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* storage unavailable: in-memory state still clears */
-    }
+    dropToken();
     setUser(null);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    let stored: string | null = null;
-    try {
-      stored = sessionStorage.getItem(STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
+    const stored = readToken();
     if (!stored) {
       setReady(true);
       return;
     }
+    // Capture the initiating session and generation: a login, logout, or
+    // expiry after this point makes the restoration stale, so it must not
+    // set a user over a newer session or clear that session on its 401.
+    const attempt = generation.current;
     api
       .me(stored)
       .then((me) => {
-        if (!cancelled) setUser(me);
+        if (cancelled || generation.current !== attempt) return;
+        setUser(me);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
-        clearSession();
-        if (err instanceof ApiRequestError && err.status === 401) setExpired(true);
+        if (cancelled || generation.current !== attempt) return;
+        // Only an explicit 401 retires the session. Network and server
+        // failures keep the stored token so a later retry can still
+        // validate or revoke it instead of orphaning it.
+        if (err instanceof ApiRequestError && err.status === 401) {
+          clearSession();
+          setExpired(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setReady(true);
@@ -84,18 +93,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearSession]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string): Promise<User> => {
+      // A new login supersedes any in-flight restoration, logout, or
+      // earlier login so their continuations cannot clobber this one.
+      const attempt = ++generation.current;
       setError(null);
       setExpired(false);
       try {
         const result = await api.login(email, password);
-        try {
-          sessionStorage.setItem(STORAGE_KEY, result.access_token);
-        } catch {
-          /* private mode: session lasts for this tab only */
-        }
+        if (generation.current !== attempt) return result.user;
+        const persistence = writeToken(result.access_token);
         setUser(result.user);
+        // A successful current login finalizes authentication readiness on
+        // its own. A still-pending restoration for an older session must
+        // not keep the app on "loading" after this session is established.
+        setReady(true);
+        if (persistence === "memory-only") {
+          setError("Signed in for this tab only: this browser would not keep the session.");
+        }
+        return result.user;
       } catch (err: unknown) {
+        if (generation.current !== attempt) throw err;
         if (err instanceof ApiRequestError) setError(friendlyAuthMessage(err.code, err.message));
         else setError("Login failed. Please try again.");
         throw err;
@@ -116,33 +134,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    let stored: string | null = null;
-    try {
-      stored = sessionStorage.getItem(STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
+    // Starting a logout supersedes earlier operations, and a newer login
+    // started while the revocation is in flight supersedes this one: only
+    // the still-current logout may clear local state.
+    const attempt = ++generation.current;
+    // Read before revoking: the in-memory fallback keeps the token even
+    // when sessionStorage itself is broken, so the server session can
+    // still be revoked instead of orphaned.
+    const stored = readToken();
     try {
       if (stored) await api.logout(stored);
     } catch {
-      setError("Signed out on this device, but the server session may still be active.");
+      if (generation.current === attempt) {
+        setError("Signed out on this device, but the server session may still be active.");
+      }
     } finally {
-      clearSession();
-      setExpired(false);
+      if (generation.current === attempt) {
+        clearSession();
+        setExpired(false);
+      }
     }
   }, [clearSession]);
 
   const markSessionExpired = useCallback(() => {
+    // Expiry supersedes in-flight operations too, so none of them can
+    // resurrect the retired session afterwards.
+    generation.current += 1;
     clearSession();
     setExpired(true);
   }, [clearSession]);
 
   const clearError = useCallback(() => setError(null), []);
 
+  const getToken = useCallback(() => readToken(), []);
+
   const value = useMemo<AuthState>(
-    () => ({ user, ready, expired, error, login, register, logout, markSessionExpired, clearError }),
-    [user, ready, expired, error, login, register, logout, markSessionExpired, clearError],
+    () => ({ user, ready, expired, error, login, register, logout, markSessionExpired, clearError, getToken }),
+    [user, ready, expired, error, login, register, logout, markSessionExpired, clearError, getToken],
   );
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

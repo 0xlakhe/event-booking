@@ -4,17 +4,74 @@
 }
 body {
   margin: 0;
-  padding: 2rem 1rem;
+  padding: 1rem;
   max-width: 720px;
   margin-inline: auto;
   line-height: 1.5;
+}
+nav {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 1rem;
+}
+input,
+textarea,
+button {
+  font: inherit;
+  max-width: 100%;
+}
+input[type="email"],
+input[type="password"],
+input[type="search"],
+input[type="datetime-local"],
+input[type="number"],
+textarea {
+  width: 100%;
+  max-width: 24rem;
+  box-sizing: border-box;
+}
+ul {
+  padding-left: 1.25rem;
 }
 .card {
   border: 1px solid #ddd;
   border-radius: 8px;
   padding: 1rem;
   margin-top: 1rem;
+  list-style: none;
+  margin-left: 0;
+}
+ul:has(> li.card) {
+  padding-left: 0;
 }
 .muted {
   color: #666;
+}
+.event-description {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.event-description-collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+.description-toggle {
+  font-size: 0.875rem;
+}
+[role="alert"] {
+  border-left: 4px solid #b00;
+  padding-left: 0.5rem;
+}
+[role="status"] {
+  border-left: 4px solid #06c;
+  padding-left: 0.5rem;
+}
+@media (min-width: 640px) {
+  body {
+    padding: 2rem 1rem;
+  }
 }

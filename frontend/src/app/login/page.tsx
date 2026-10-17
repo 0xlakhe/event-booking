@@ -21,8 +21,9 @@ export default function LoginPage() {
     setPending(true);
     setFailure(null);
     try {
-      await login(email, password);
-      router.push("/");
+      const user = await login(email, password);
+      // Admins work in management; everyone else browses events.
+      router.push(user.role === "admin" ? "/admin" : "/");
     } catch (err: unknown) {
       if (err instanceof ApiRequestError) setFailure(friendlyAuthMessage(err.code, err.message));
       else setFailure("Login failed. Please try again.");
