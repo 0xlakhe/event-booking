@@ -718,8 +718,134 @@ Limitations:
   lost-response/stale-query guards belong to TASK-008.
 - Cold-start/sleep behavior unknown until a host is chosen.
 
+---
+
+## Task: TASK-007 logout fixes (+ recheck)
+Status: Yes (preparation scope; deployment still pending)
+Date: 2026-10-16
+Changed:
+- frontend/src/lib/token_store.ts (NEW: memory-fallback token store)
+- frontend/src/lib/auth.tsx (store adoption, tab-only warning)
+- frontend/src/app/page.tsx (visible dismissible provider-error alert)
+- frontend/src/lib/auth.test.tsx + vitest.config.ts + package.json/lock
+  (NEW: 3-test Vitest harness)
+- frontend/src/lib/api.ts (`||` fallback), frontend/Dockerfile (ARG default)
+- docs/PROGRESS.md (this entry)
+
+1. Visible logout warning: the provider error was set but no page
+   rendered it. The home page now shows it as a dismissible alert.
+2. Storage failures: every token read/write goes through a store that
+   mirrors to memory and reports persisted/memory-only, so a broken
+   sessionStorage can neither orphan the server session (logout still
+   sends the memory token) nor fail silently (login warns when the
+   session is tab-only).
+
+Evidence (actual runs, 2026-10-16 NPT):
+- Host `npx vitest run` and container `npm test -- --run` → 3 passed:
+  throwing-storage login warns + logout revokes with the memory token
+  then warns with cleared state; failing logout clears + warns;
+  success clears silently. Harness setup needed two fixes of its own
+  (esbuild JSX automatic; explicit RTL cleanup without globals mode).
+- `tsc --noEmit` clean (container), `npm run build` passes, backend
+  suite `95 passed` (backend untouched).
+- Live browser: login → backend stopped → logout shows "Signed out on
+  this device, but the server session may still be active. Dismiss"
+  with signed-out state; orphaned session rows deleted after (dev
+  counts intact); stack healthy. A stale `.next` volume crash during
+  this check was fixed by recreating only `eventbook_frontend_next`.
+- `docker compose config --quiet` OK.
+
+Recheck (same reviewer session `ses_ec13a2b9bffeWMyahJogZ8RnT9`):
+typecheck clean, in-container vitest 3 passed, read-only curl/grep
+checks clean — all five changes CONFIRMED with file:line evidence, no
+new blockers (two informational minors: near-dead 401 branch kept as
+forward-compatible; rename also resolved the raw-message finding).
+No recheck outstanding.
+
+Remaining: external deployment inputs (unchanged — still missing).
+Next: stop for review. Do not start TASK-008.
+
+---
+
+## Task: TASK-007 token authority fixes (+ recheck)
+Status: Yes (preparation scope; deployment still pending)
+Date: 2026-10-16
+Changed:
+- frontend/src/lib/token_store.ts (memory-authoritative reads + adopt)
+- frontend/src/lib/token_store.test.ts (NEW: 2 transition tests + drop)
+- docs/PROGRESS.md (this entry)
+
+Review reproduced two authority bugs in the store with simulated
+storage: (1) a failed save left the older stored token winning reads,
+so logout targeted the wrong session; (2) a storage-restored token was
+never retained, so later storage failure lost it and skipped server
+revocation. `readToken()` now returns memory when set, otherwise adopts
+a found stored token into memory, otherwise falls back to memory on
+storage throw. `dropToken()` clears memory first.
+
+Evidence (actual runs, 2026-10-16 NPT):
+- New transition tests fail on the old logic (2 failed) and pass on the
+  new (host `npx vitest run` → 6 passed across both files).
+- `tsc --noEmit` clean (container).
+Recheck (same reviewer session `ses_ec13a2b9bffeWMyahJogZ8RnT9`):
+in-container typecheck clean, host vitest 6 passed, read-only curls
+200 — both changes CONFIRMED with path traces; no new findings.
+Remaining: external deployment inputs (unchanged — still missing).
+Next: stop for review. Do not start TASK-008.
+
+---
+
+## Task: TASK-007 logout-resurrection fix (+ recheck)
+Status: Yes (preparation scope; deployment still pending)
+Date: 2026-10-16
+Changed:
+- frontend/src/lib/token_store.ts (`retired` flag)
+- frontend/src/lib/token_store.test.ts (per-test module reload, +2 tests)
+- docs/PROGRESS.md (this entry)
+
+Review reproduced a logout resurrection: `dropToken()` cleared memory,
+but a throwing `removeItem` left the old token in storage, and the next
+read adopted it back. A `retired` flag (set on drop, cleared on write)
+now short-circuits post-logout reads to null, so a dropped token can
+never be re-adopted; fresh logins and reload adoption are unaffected
+(reload = fresh module state). Tests reload the module per test for
+true page-load semantics — this also fixed a latent test-ordering trap
+where `afterEach` drops would otherwise poison later tests via the
+persistent flag.
+
+Evidence (actual runs, 2026-10-16 NPT):
+- New drop tests fail with the guard removed (2 failed) and pass with
+  it (host `npx vitest run` → 7 passed across both files).
+- `tsc --noEmit` clean (container).
+Recheck (same reviewer session `ses_ec13a2b9bffeWMyahJogZ8RnT9`):
+typecheck clean, vitest 7 passed, read-only curls 200 — CONFIRMED
+with traces of all three paths; no new findings (checked-and-dismissed:
+static store import in auth.test.tsx is harmless since jsdom storage
+is empty at every mount and each login clears the flag).
+Remaining: external deployment inputs (unchanged — still missing).
+Next: stop for review. Do not start TASK-008.
+
 Remaining: external access + one release action (human-owned).
 Next: stop for review. Do not start TASK-008.
+
+---
+
+## Git: initial push (2026-10-16 NPT)
+- Found existing empty repo (`main`, no commits) with remote
+  `origin https://github.com/0xlakhe/event-booking.git` and no hosting
+  CLIs/credentials beyond the prior state.
+- Hygiene before commit: `.env` ignored via `.gitignore:2`
+  (`git check-ignore` confirms); secret scan of candidates found no
+  keys/tokens (only `changeme-*-local-only` placeholders in
+  `.env.example`); `git ls-files` confirms no `.env`, `__pycache__`,
+  or `node_modules` tracked (58 files).
+- Committed in 4 increments: `5271be1` docs handoff; `45037a8`
+  orchestration/env/README; `93a2e51` backend through TASK-006;
+  `22b2bc8` frontend slice. Tree clean afterward.
+- `git push -u origin main` → `[new branch] main -> main`, tracking set.
+- Note: authorization for this push came from the machine's existing
+  GitHub credentials; no new credentials were created or stored by the
+  agent. Evaluator access (public repo or invite) still human-owned.
 
 ---
 
@@ -849,3 +975,913 @@ Review limits: single suite run (no flakiness loop); live writes,
 concurrent last-seat safety beyond code inspection were out of scope.
 Outcome: TASK-005 accepted with recorded minors; no unresolved
 blockers. Human/team-lead review still required per AGENTS.md.
+
+---
+
+## Task: TASK-008
+Status: Yes
+Date: 2026-10-16
+Changed:
+- frontend/src/lib/api.ts (booking/admin client fns + shapes)
+- frontend/src/lib/datetime.ts (NEW: Nepal display/input conversion)
+- frontend/src/app/page.tsx (URL-param search/pages, stale guard)
+- frontend/src/app/events/[id]/page.tsx (NEW: detail + recovery booking)
+- frontend/src/app/bookings/page.tsx (NEW: history + cancel)
+- frontend/src/app/admin/page.tsx (NEW: CRUD/attendees, role-aware)
+- frontend/src/components/event-form.tsx + nav.tsx (NEW)
+- frontend/src/app/layout.tsx (nav), globals.css (mobile/responsive)
+- frontend tests: datetime/stale/recovery/sign-out (20 total)
+- docs/IMPLEMENTATION_PLAN.md (TASK-008 row Yes), README (slice noted)
+- docs/PROGRESS.md (this entry)
+
+Decisions (with reasons):
+- Search/page live in URL params (shareable, back-button safe);
+  per-request guards discard stale responses on listing, admin, and
+  bookings alike. Sign-out paths clear items inline AND bump request
+  ids so late pre-sign-out responses cannot repopulate.
+- Lost POST never retries blindly: network failure refetches history;
+  a matching active booking confirms success, otherwise one explicit
+  retry stays user-initiated.
+- Nepal time via explicit `Asia/Kathmandu` formatting and literal
+  `+05:45` conversion; device zone never consulted; backend stays the
+  validation authority. Edit prefills by fetching full detail (list
+  rows lack descriptions).
+- Booking double-submit guarded at handler level (ref + finally) as
+  well as the disabled button; cancel/admin forms were already guarded.
+- Hydration clears the session on 401 only; other `/me` failures keep
+  the token for retry/revocation instead of orphaning it.
+
+Evidence (actual runs, 2026-10-16 NPT):
+- Container typecheck clean; host vitest `20 passed` (datetime TZ
+  matrix, stale out-of-order, lost-recovery both outcomes, sign-out
+  clearing, expiry/logout/storage paths); `next build` 8/8 static.
+- Backend suite `95 passed` (backend untouched by this task).
+- Live browser pass at phone width (disposable rows cleaned,
+  2/13/1/0 restored): listing/search/pagination, detail Nepal label,
+  register → login → last-seat booking → history → cancel with
+  distinct cancelled state, normal-user admin notice, admin CRUD +
+  attendees + correct Nepal→UTC create (10:00 +05:45 → 04:15Z).
+  Stack healthy, logs clean.
+- `docker compose config --quiet` OK.
+
+Milestone review (independent subagent `ses_ebbf5b9b4ffeMvdW4ptgw5WkhX`,
+read-only + typecheck/vitest/curls): one BLOCKING (stale bookings
+after sign-out) + five minors, all fixed and recheck-CONFIRMED
+(typecheck clean, 20/20, curls 200). Two recheck minors also fixed
+inline (bookings 401 clearing, request-id bumps). No further recheck:
+no blockers at any stage; every correction suite-covered. Known gaps
+recorded: admin page/form/login pages rely on the live pass
+(component tests cover lib/listing/detail-recovery/sign-out);
+edit-vs-book race reserved for TASK-009.
+
+Limitations:
+- Empty-dataset/API-down states render-covered only (dev seed intact);
+  expiry banner provider-tested; native confirm dialog not driven.
+- Deployment still pending (unchanged); nothing here claims otherwise.
+Remaining: none for TASK-008.
+Next: stop for review. Do not start TASK-009 or claim the app is deployed.
+
+---
+
+## Task: TASK-008 bookings-screen fixes (+ recheck)
+Status: Yes
+Date: 2026-10-16
+Changed:
+- frontend/src/app/bookings/page.tsx (account scoping, kept feedback,
+  pagination, page clamp)
+- frontend/src/app/bookings/page.test.tsx (+4 tests)
+- docs/PROGRESS.md (this entry)
+
+Review required three fixes, all confirmed in code and covered:
+1. Account switching showed stale rows: rows now clear the moment the
+   account changes, render only when fetched for the signed-in account
+   (`loadedFor`), and late/token-rotated responses are discarded.
+2. Cancel feedback survived refresh: `load(keepFailure)` refetches
+   first, then the message is restored instead of wiped.
+3. History paged (10/page with Prev/Next and counts) instead of a
+   capped first-50 fetch.
+Recheck (same reviewer session) CONFIRMED all three with traces, and
+found one minor since fixed: an emptied last page stranded the viewer,
+so the loader steps back a page and a first-page shortcut renders
+whenever multiple pages exist. No recheck of that one-liner-plus-test:
+no blockers at any stage and the 24-test frontend suite (typecheck
+clean) covers it.
+Evidence: host `npx vitest run` → 24 passed; container `tsc --noEmit`
+clean; `docker compose config --quiet` OK. Deployment still pending
+(unchanged); nothing here claims otherwise.
+Remaining: none for these fixes.
+Next: stop for review. Do not start TASK-009.
+
+---
+
+## Task: TASK-008 cancel-race fixes (+ recheck)
+Status: Yes
+Date: 2026-10-16
+Changed:
+- frontend/src/app/bookings/page.tsx (token-guarded continuations)
+- frontend/src/app/bookings/page.test.tsx (+3 race tests)
+- docs/PROGRESS.md (this entry)
+
+Review found a cancellation race: A's in-flight cancel completion
+refreshed B's screen and A's stale 401 expired B's session. Every
+continuation now bails unless the token is still the initiator's
+(success skips its load, errors skip feedback/expiry handling), the
+pending indicator clears only its own row, and account switches reset
+it. Two regression tests pin both outcomes; both fail with the guards
+removed. Recheck CONFIRMED with traces; its one follow-up minor
+(switch mid-refetch stamping A's message on B) fixed the same way
+with a third test. No further recheck: no blockers at any stage.
+Evidence: host `npx vitest run` → 27 passed; container
+`tsc --noEmit` clean; `docker compose config --quiet` OK. Deployment
+still pending (unchanged); nothing here claims otherwise.
+Remaining: none for these fixes.
+Next: stop for review. Do not start TASK-009.
+
+---
+
+## Task: admin management-only scope (user scope decision)
+Status: Yes
+Date: 2026-10-17
+Changed:
+- backend/app/auth.py (`require_non_admin` → 403 ADMIN_BOOKING_FORBIDDEN)
+- backend/app/bookings.py (all three routes require non-admin)
+- backend/app/seed.py (nearly-full booking by normal user; renamed helper)
+- backend/tests/test_booking_admin_forbidden.py (NEW: 4 tests)
+- backend/tests/test_database.py (helper rename only)
+- frontend: nav/detail/bookings admin gating + friendly message maps
+- frontend tests: detail + bookings admin-restriction cases
+- docs/REQUIREMENTS.md (§4 roles, acceptance note), docs/TECHNICAL_DESIGN.md
+  (REST permissions, 403 code, seed paragraph), README.md, plan TASK-002 note
+- docs/PROGRESS.md (this entry)
+
+Scope (user decision, not a PDF prohibition): administrators manage
+events and attendees only and never book; booking/history/cancellation
+serve normal users. Anonymous callers still get 401 first (dependency
+runs after auth); public browsing unchanged.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Backend `pytest` → `99 passed` (95 + 4 restriction tests: admin 403
+  on all three endpoints incl. missing-event UUID, expired-admin 401
+  first, anonymous AUTH_REQUIRED codes, normal-user book/history/
+  cancel smoke with zero-row proof).
+- Live on dev (disposable rows cleaned after): admin booking POST and
+  history → 403 `ADMIN_BOOKING_FORBIDDEN`; normal user → 201; sessions
+  cleaned; backend logs clean; dev users/events intact.
+- Frontend `vitest` → 29 passed; container typecheck clean.
+- `docker compose config --quiet` OK.
+Review (independent subagent `ses_eb9eace0effeRSRloHd76zuKAC`): no
+blockers; 4 minors, all fixed and recheck-CONFIRMED (README qualifier
++ count, stale NOT-done bullets, anonymous envelope asserts,
+missing-event/expired-admin cases, friendly-map consistency). After the
+recheck, two test-only additions (cosmetic local rename, real-booking
+403 case) plus the README count refresh to 102; no production code
+changed since the reviewed state, and the final green suites above
+cover them. The recheck's one dangling pointer (README → PROGRESS
+cleanup note) is resolved by this entry.
+
+Existing-data cleanup (explicit, not silent):
+- Removed exactly one row on dev: the seeded ADMIN booking on Seed
+  Event 03 (identified by fixed seed UUIDs), then re-seeded, which
+  created the normal-user booking via the lock protocol. Seed reruns
+  are clean (0/0/0/0).
+- REQUIRED human decision, not done: `xyz@gmail.com` (real non-seed
+  user account) holds active bookings on Seed Events 02 and 03,
+  including the last seat of the capacity-2 demo event, which is
+  therefore currently FULL rather than nearly-full. Nothing of
+  theirs was touched. To restore the demo, the human cancels their
+  own Event 03 booking in the app (owner action), or explicitly
+  authorizes a privileged delete here. Same cleanup applies to any
+  future live database carrying pre-scope-change admin bookings.
+
+Limitations:
+- Deployment still pending (unchanged); nothing here claims otherwise.
+- Nav role-hiding has no unit test (read-verified only).
+Remaining: human cleanup decision above; then TASK-009.
+Next: stop for review. Do not start TASK-009.
+
+---
+
+## Task: admin management-only scope (user scope decision)
+Status: Yes
+Date: 2026-10-17
+Changed:
+- backend/app/auth.py (`require_non_admin` → 403 ADMIN_BOOKING_FORBIDDEN)
+- backend/app/bookings.py (all three routes require non-admin)
+- backend/app/seed.py (nearly-full booking by normal user; renamed helper)
+- backend/tests/test_booking_admin_forbidden.py (NEW: 4 tests)
+- backend/tests/test_database.py (helper rename only)
+- frontend: nav/detail/bookings admin gating + friendly message maps
+- frontend tests: detail + bookings admin-restriction cases
+- docs/REQUIREMENTS.md (§4 roles, acceptance note), docs/TECHNICAL_DESIGN.md
+  (REST permissions, 403 code, seed paragraph), README.md, plan TASK-002 note
+- docs/PROGRESS.md (this entry)
+
+Scope (user decision, not a PDF prohibition): administrators manage
+events and attendees only and never book; booking/history/cancellation
+serve normal users. Anonymous callers still get 401 first (dependency
+runs after auth); public browsing unchanged.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Backend `pytest` → `102 passed` (incl. 4 restriction tests: admin 403
+  on all three endpoints incl. missing-event UUID and a real foreign
+  booking left intact, expired-admin 401 first, anonymous
+  AUTH_REQUIRED codes, normal-user book/history/cancel smoke with
+  zero-row proof).
+- Live on dev (disposable rows cleaned after): admin booking POST and
+  history → 403 `ADMIN_BOOKING_FORBIDDEN`; normal user → 201; sessions
+  cleaned; backend logs clean; dev users/events intact.
+- Frontend `vitest` → 30 passed; container typecheck clean.
+- `docker compose config --quiet` OK.
+Review (independent subagent `ses_eb9eace0effeRSRloHd76zuKAC`): no
+blockers; 4 minors, all fixed and recheck-CONFIRMED (README qualifier
++ count, stale NOT-done bullets, anonymous envelope asserts,
+missing-event/expired-admin cases, friendly-map consistency; plus a
+cosmetic test-local rename and a real-booking 403 case added after).
+The recheck's one dangling pointer (README → PROGRESS cleanup note) is
+resolved by this entry.
+
+Existing-data cleanup (explicit, not silent):
+- Removed exactly one row on dev: the seeded ADMIN booking on Seed
+  Event 03 (identified by fixed seed UUIDs), then re-seeded, which
+  created the normal-user booking via the lock protocol. Seed reruns
+  are clean (0/0/0/0).
+- REQUIRED human decision, not done: `xyz@gmail.com` (real non-seed
+  user account) holds active bookings on Seed Events 02 and 03,
+  including the last seat of the capacity-2 demo event, which is
+  therefore currently FULL rather than nearly-full. Nothing of
+  theirs was touched. To restore the demo, the human cancels their
+  own Event 03 booking in the app (owner action), or explicitly
+  authorizes a privileged delete here. Same cleanup applies to any
+  future live database carrying pre-scope-change admin bookings.
+
+Limitations:
+- Deployment still pending (unchanged); nothing here claims otherwise.
+- Nav role-hiding has no unit test (read-verified only).
+Remaining: human cleanup decision above; then TASK-009.
+Next: stop for review. Do not start TASK-009.
+
+---
+
+## Task: started events read-only for admins (user scope decision)
+Status: Yes
+Date: 2026-10-17
+Changed:
+- backend/app/admin.py (EVENT_STARTED checks in edit/delete; docstring)
+- backend/tests/test_admin.py (+4: past edit/delete, now() boundary,
+  lock-wait crossing, attendees-on-past; precedence pin)
+- frontend/src/app/admin/page.tsx (read-only explanation, Details action)
+- frontend/src/app/page.tsx + events/[id] (restoration-gated redirect)
+- frontend/src/components/nav.tsx (admin hides Events link)
+- frontend/src/app/login/page.tsx (role-based landing)
+- frontend tests (+8: redirects, landing, nav roles, details)
+- docs/REQUIREMENTS.md (§4 bullets, checklist note),
+  docs/TECHNICAL_DESIGN.md (Edit/Delete protocol, creation-only line,
+  frontend behavior), README.md (trade-offs)
+- docs/PROGRESS.md (this entry)
+
+Scope (user-selected edge-case policy, not a PDF requirement): started
+events are preserved as read-only history — admin edits and deletion
+fail 409 once starts_at <= fresh database time read after the event
+lock. Future-event capacity/deletion safeguards unchanged; details and
+attendees stay readable; no historical data deleted or rewritten.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Backend `pytest` → `103 passed` (past edit/delete 409 with unchanged
+  state, exact-now() boundary rejects, lock-held start-crossing rejects
+  with title intact, attendees 200 on started events, precedence pinned
+  to EVENT_STARTED over capacity/booking conflicts).
+- Frontend `vitest` → 39 passed (restoration-gated redirects incl. a
+  pending-restoration no-redirect case, role landing, nav per role,
+  read-only details with attendees reachable); container typecheck
+  clean; `docker compose config --quiet` OK.
+- Exact-`now()` equality is not deterministically exercisable without
+  a frozen clock (documented limitation); the `<=` operator plus the
+  boundary-side test carry it.
+Review (independent subagent `ses_eb99fb632ffews20c2ZER98RBH`): no
+blockers; 6 minors, all fixed (design creation-only line, module
+docstring, precedence pin, attendees-on-past test, normal-user
+redirect/nav cases). No recheck requested: no blockers at any stage
+and post-review changes are test/doc-only with green suites.
+Limitations: deployment still pending (unchanged); nav hiding covered
+by new unit tests here (supersedes the older read-only note).
+Remaining: human xyz cleanup decision; then TASK-009.
+Next: stop for review. Do not start TASK-009.
+
+---
+
+## Task: inline admin descriptions and compact previews (user choice)
+Status: Implemented; independent local review accepted; backend fixture verification pending
+Date: 2026-10-17
+Changed:
+- backend/app/events.py (optional description projection in existing bounded query)
+- backend/app/admin.py (admin list requests EventDetail rows)
+- backend/tests/test_admin.py (description/pagination/public-shape/query-budget regression)
+- frontend/src/lib/api.ts (admin list typed as EventDetail collection)
+- frontend/src/app/admin/page.tsx (inline descriptions; remove Details state/action/duplicate metadata)
+- frontend/src/components/event-description.tsx (NEW: independent accessible preview controls)
+- frontend/src/app/admin/page.test.tsx (inline metadata, controls, mocked overflow and resize regressions)
+- frontend/src/app/globals.css (three-line clamp, wrapping, small toggle)
+- docs/TECHNICAL_DESIGN.md (admin collection and presentation contract)
+- docs/PROGRESS.md (this evidence)
+
+User-selected presentation, not a PDF mandate: descriptions now appear
+on both upcoming and started admin cards instead of the started-event
+notice and separate Details/Hide details section. Metadata appears once.
+Descriptions initially occupy at most three lines. Read more/Read less
+buttons use aria-expanded/aria-controls and appear only for measured
+overflow; resizing remeasures collapsed previews. Newlines and long words
+wrap. Each card expands independently; changed descriptions reset their
+preview. Attendees, future edit/delete, routing and backend started-event
+immutability are unchanged. Admin list includes descriptions in the same
+count + aggregate page query; public list shape remains EventSummary.
+
+Actual verification:
+- RED: `docker compose exec -T frontend ./node_modules/.bin/vitest run
+  --cache=false src/app/admin/page.test.tsx` failed both new UI behaviors
+  before implementation (old notice remained; no Read more control).
+- GREEN: `docker compose exec -T frontend ./node_modules/.bin/vitest run
+  --cache=false` -> 41 passed, 9 files (includes routing/nav, auth,
+  booking, and the three admin-card tests).
+- `docker compose exec -T frontend ./node_modules/.bin/tsc --noEmit
+  --incremental false` -> passed. `git diff --check` -> passed.
+- Read-only Python/SQLAlchemy check in existing backend container:
+  validated current_database/current_user = eventbook_test /
+  eventbook_test_runtime; set default_transaction_read_only=on and
+  verified transaction_read_only=on before queries. Called
+  search_events(..., upcoming_only=False, page=1, page_size=2,
+  include_description=True) on existing populated fixtures: descriptions
+  matched direct SELECTs; exactly two event queries (count + bounded
+  page), correct page limit; default public list omitted descriptions;
+  page 1000000 returned empty items with unchanged total. Passed.
+
+Limitations and safety:
+- The new fixture-based backend regression was NOT executed. Auto-review
+  rejected its broad isolated-test cleanup; a subsequent read-only safety
+  audit found test tables nonempty and refused cleanup. No bypass or
+  database mutation was attempted afterward. Approval of the destructive
+  isolated-test cleanup is needed before that fixture suite can run.
+- Overflow/resize tests mock DOM dimensions; no new browser visual/mobile
+  verification, build, or live authenticated end-to-end run is claimed.
+- No installs, service lifecycle actions, migrations, seeds, development
+  data writes, deployment, or TASK-009 work.
+
+Independent reviewer: Wegener, agent 01a1466d-88e9-7992-9866-58927a8017e8.
+Initial review found no blockers and independently verified 40 tests and
+typecheck; noted stale design prose (corrected) and missing resize/layout
+coverage (added mocked resize regression; actual browser layout remains
+unverified). Recheck accepted with no blocking findings; reviewer
+independently reran all 41 tests and output-free typecheck successfully.
+Read-only SQL evidence above remains builder-verified, not independently
+rerun by the reviewer. Human/team-lead approval is unchanged; deployment
+and the previously recorded data-cleanup decision remain pending.
+
+---
+
+## Task: admin logout control + description verification
+Status: Yes
+Date: 2026-10-17
+Changed:
+- frontend/src/components/nav.tsx (identity + Log out for all roles)
+- frontend/src/app/page.tsx (removed redundant home logout block)
+- frontend/src/app/admin/page.tsx + bookings/page.tsx (provider-error alerts)
+- frontend/src/components/nav.test.tsx (+3 logout tests)
+- frontend/src/app/bookings/page.test.tsx (+1 real-page warning test)
+- docs/PROGRESS.md (this entry)
+
+1. Logout control: nav now renders the signed-in identity with a Log
+   out button for every role (native button, in normal flow, so visible
+   on desktop and mobile). It reuses the existing logout flow: server
+   revocation attempted, local auth/private state always cleared, and
+   the failure warning set. The home page showed the same control, so
+   its duplicate block was removed; provider-error alerts now render on
+   home, admin, and bookings pages alike.
+2. Description verification (work by another session, verified here):
+   admin list items carry full descriptions from the same aggregate
+   query; `EventDescription` clamps to 3 lines with Read more/less only
+   when overflowing (short text: no toggle), with aria-expanded/controls.
+3. Backend descriptions regression: executed as the single isolated
+   test `tests/test_admin.py::test_admin_list_descriptions_are_
+   paginated_without_per_event_queries` → 1 passed. The reported
+   approval rejection of nonempty-table cleanup was not encountered:
+   the test's `clean_db` fixture truncates only the isolated
+   `eventbook_test` database (guarded by fixed name + live role check),
+   never development data — that fixture path is the safe, approved
+   way to run it. No bypass was needed and none was attempted; had the
+   tool layer rejected it, the fallback would have been running it
+   against a disposable database, not touching dev.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Host `npx vitest run` → 45 passed (nav logout visibility for
+  user/admin, revocation call + local clear, failure warning with
+  cleared state, real-page warning on bookings); container
+  `tsc --noEmit` clean; backend `pytest` → 104 passed.
+- Live browser at desktop width: admin login lands on /admin, nav shows
+  "Admin · admin@example.com (admin) Log out", probe event with a
+  249-char description shows a clamped preview with Read more, expands
+  to Read less and collapses back. Mobile width: same toggle usable,
+  logout present in nav.
+- Live admin logout from nav: signed-out state, Events link restored,
+  no user display. Probe event deleted after (DELETE 1, no bookings);
+  one stale admin session from an earlier pass removed explicitly;
+  dev restored to 3 users / 13 events / 3 active bookings / 0 sessions;
+  backend logs clean; `/health` 200.
+- `docker compose config --quiet` OK.
+Review (independent subagent `ses_eb98970d3ffeowHX5YOUnFMAOO`): no
+blockers; 1 minor (warning asserted via probe, not real page markup),
+fixed with a real-page bookings test asserting the alert. No recheck
+requested: no blockers at any stage and the fix is covered by the
+green suite.
+Limitations: responsive check is visual-snapshot, not automated
+layout metrics; the backend descriptions test beyond the single named
+case was covered by the full-suite run, not re-driven per assertion;
+deployment still pending (unchanged).
+Remaining: human xyz cleanup decision; then TASK-009.
+Next: stop for review. Do not deploy or start unrelated work.
+
+---
+
+## Task: remove redundant Admin self-link on the admin page
+Status: In progress (awaiting independent review)
+Date: 2026-10-17
+Changed:
+- frontend/src/components/nav.tsx (hide Admin link when pathname is /admin or /admin/*; identity + Log out unchanged; Events/bookings gating unchanged)
+- frontend/src/components/nav.test.tsx (pathname mock + 2 regression tests; header comment updated)
+- docs/PROGRESS.md (this entry)
+
+Scope: admin navigation only. No backend, redirect, permission, or
+management-access change: route guards and backend checks stay
+authoritative; admins off /admin (e.g. /login) still get the Admin
+link; on /admin the self-link is hidden while identity and Log out
+stay visible on desktop and mobile (same in-flow controls, no layout
+change).
+
+Evidence (actual runs, 2026-10-17 NPT):
+- `docker compose exec -T frontend npm run typecheck` → clean (`tsc --noEmit`, no errors).
+- `docker compose exec -T frontend npm test -- --run` → 9 files, 47 passed (was 45; +2 new).
+- `docker compose exec -T frontend npm test -- --run src/components/nav.test.tsx` → 9 passed.
+- Red proof (temporary revert of `&& !onAdminPage` only, file restored after): nav suite → 1 failed / 8 passed, failing on the new on-/admin hidden-self-link test; restored file re-greened (9 passed). Proves the new test discriminates old vs fixed behavior.
+- `git diff --check` → clean.
+Limitations: jsdom pathname mocked (no live browser pass this task); backend suite untouched (frontend-only change); deployment still pending (unchanged).
+Remaining: independent reviewer verdict; then mark Yes.
+Next: reviewer subagent, then stop for review. Do not deploy or start unrelated work.
+
+Review (independent subagent `ses_eb97f9d58ffeSn5gZcFSaXP3sz`): no BLOCKING findings; acceptance criteria 1–5 met as far as read-only review plus allowed checks determine. Independently re-verified: container typecheck clean, nav suite 9 passed, `git diff --check` clean. One MINOR (no production-build evidence for the new root-layout `usePathname` hook, no Suspense boundary) — closed by builder without code change: `docker compose exec -T frontend npm run build` → success (all routes prerendered, shared JS 103 kB; no missing-Suspense error). No recheck requested: no blockers at any stage and the minor needed only build evidence, now recorded. Scope limits (reviewer + builder): jsdom pathname mock only, no live browser; `/admin/*` by code reading (no such subroute exists; query strings never reach `usePathname`); backend suite not re-run (nothing backend touched); red-proof re-execution read-verified by reviewer, executed by builder pre-review.
+Status: Yes. Deployment still pending (unchanged).
+Next: stop for review. Do not deploy or start unrelated work.
+
+---
+
+## Task: admin list time filter + remove redundant Back to events link
+Status: In progress (awaiting independent review)
+Date: 2026-10-17
+Changed:
+- backend/app/events.py (time_filter: upcoming/past/all; shared WHERE + ORDER per filter; parse_time_filter 422; default upcoming)
+- backend/app/admin.py (admin list accepts time_filter, default upcoming)
+- backend/tests/test_admin.py (updated all-events test; +3: membership/search/order, now() boundary, pagination totals; public-list-unchanged assert)
+- frontend/src/lib/api.ts (TimeFilter type; adminApi.listEvents sends time_filter)
+- frontend/src/app/admin/page.tsx (Upcoming/Past/All control, URL state, page reset on change; removed bottom Back to events link)
+- frontend/src/app/admin/page.test.tsx (controllable URL/router mock; +6 filter/URL/link tests)
+- docs/TECHNICAL_DESIGN.md (admin list REST row, ordering paragraph, frontend behavior)
+- docs/PROGRESS.md (this entry)
+
+Scope (user-selected usability improvement, not a PDF requirement):
+admin event management gained an Upcoming/Past/All time filter with an
+Upcoming default, and lost the redundant bottom Back to events link that
+pointed admins at public browsing. Started-event read-only restrictions,
+inline descriptions, attendee access and the public listing are unchanged.
+
+Behavior:
+- Backend filters before pagination with one condition shared by the
+  count and the page items, inside the existing single REPEATABLE READ
+  transaction. Upcoming `starts_at > now()`, past `starts_at <= now()`,
+  all `TRUE`; unknown values are a 422 `time_filter` field error.
+- Ordering: upcoming nearest first (`starts_at ASC, id ASC`), past most
+  recent first (`starts_at DESC, id DESC`), all lists the upcoming block
+  first then the past block. Verified against PostgreSQL in the suite.
+- Frontend keeps the selection in a `time_filter` URL parameter (default
+  omitted for clean links), preserves `q`, and resets to page one when
+  the filter changes. Public `GET /api/events` gained no filter and stays
+  upcoming-only.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Backend `docker compose --profile tools run --rm tools pytest -q` →
+  `107 passed` (was 104; +3). Admin-only slice → `27 passed`.
+- Red proofs (temporary edits, restored after, verified by re-grep):
+  • Backend: defaulting the admin route to `time_filter="all"` (old
+    "all events" behavior) → membership/order test FAILED, then restored.
+  • Frontend: forcing `parseTimeFilter` to always return "upcoming" →
+    3 URL-driven tests FAILED (`requests the filter selected in the URL`,
+    `keeps the selected filter when paging`, `keeps the selected filter
+    when searching`), then restored.
+- Frontend `docker compose exec -T frontend npm test -- --run` →
+  9 files, `53 passed` (was 47; +6). Container `tsc --noEmit` clean.
+- `git diff --check` clean.
+Limitations:
+- No live browser pass for the filter: the frontend dev container is
+  serving 500 from a stale production build in its `.next` volume
+  (investigated and reported separately in this file/channel); runs are
+  container typecheck + vitest with jsdom URL/router mocks only. No
+  service was restarted here (not authorized).
+- `starts_at == now()` boundary is exercised by an event set to `now()`
+  and asserted on the past side (time only moves forward); no frozen
+  clock.
+- Public list/README/REQUIREMENTS unchanged apart from this task's docs.
+Remaining: independent reviewer verdict; then Status: Yes.
+Next: reviewer subagent, then stop for review. Do not deploy or start unrelated work.
+
+Review (independent subagent `ses_eb8307dbdffei2FyA1Gp7cdxfW`): no
+BLOCKING findings; all acceptance criteria met as far as read-only review
+plus permitted checks determine. Independently re-ran: backend suite
+`107 passed`, the named subset `3 passed`, container `tsc --noEmit`
+clean, frontend `9 files / 53 passed`, `git diff --check` clean. It
+traced the `all` ordering against the real-PostgreSQL membership test
+and confirmed count+items share one condition inside one REPEATABLE READ
+transaction with the public route unaffected. Five MINOR coverage notes:
+- MINOR-1 boundary test cannot separate `<=` from `<` without a frozen
+  clock — documented limitation, operators read-correct.
+- MINOR-2 id tie-break clauses unexercised → FIXED: added
+  `test_admin_time_filter_id_tiebreak` (equal start times; upcoming ids
+  ascending, past ids descending, all = both blocks). Red proof: flipping
+  the past id clauses to ASC fails it; restored green.
+- MINOR-3 "filter before LIMIT/OFFSET" not independently discriminated —
+  accepted: the totals assertions (upcoming total 3 vs all total 5) fail
+  for a paginate-then-filter implementation, and the WHERE sits inside
+  both SQL statements.
+- MINOR-4 default-omission URL branch unexercised → FIXED: frontend test
+  now asserts paging/search under the default filter push `/admin?page=2`
+  and `/admin?q=gala` (no `time_filter`).
+- MINOR-5 public-page Back-link retention not asserted — accepted:
+  those pages were not touched by this diff (grep confirms the link only
+  remains on the public bookings/detail pages).
+Corrections are test-only additions; suites after them: backend
+`108 passed`, frontend `54 passed`, typecheck clean.
+Status: Yes. Deployment still pending (unchanged).
+Next: stop for review. Do not deploy or start unrelated work.
+
+Recheck (same reviewer `ses_eb8307dbdffei2FyA1Gp7cdxfW`): both
+corrections VERIFIED with no new blocking or minor findings. It re-read
+the tie-break and default-omission tests (faithful, not tautological),
+confirmed the production strings are unchanged since review, and re-ran:
+backend full `108 passed` and the single tie-break test `1 passed` (5/5
+alone), frontend file `10 passed`, full `9 files / 54 passed`, typecheck
+clean. Reviewer harness note (not a defect): the shared isolated
+`eventbook_test` DB makes concurrent pytest runs collide, so the suite is
+run sequentially. Milestone accepted with the remaining minors recorded;
+human/team-lead approval remains a separate checkpoint.
+Next: stop for review. Do not deploy or start unrelated work.
+
+---
+
+## Task: admin logout navigation
+Status: In progress (awaiting independent review)
+Date: 2026-10-17
+Changed:
+- frontend/src/components/nav.tsx (Log out now runs handleLogout: await logout(), then router.push("/") when the pathname is /admin or /admin/*)
+- frontend/src/components/nav.test.tsx (router mock; +3: success route+cleared state, failed revocation route+warning, no redirect off an admin route)
+- frontend/src/app/page.test.tsx (Nav + Home integration; +2: public list + signed-out nav after logout, warning visible on destination)
+- docs/TECHNICAL_DESIGN.md (frontend behavior paragraph)
+- docs/PROGRESS.md (this entry)
+
+Scope (user-selected usability fix, not a PDF requirement): after an
+admin logs out from /admin, send them to the public list `/` with
+signed-out navigation instead of leaving them on the admin page's "Log
+in as an admin to manage events." prompt. Existing logout behavior is
+preserved: server-side revocation is attempted first, local auth/private
+state is cleared even if revocation fails, the revocation-failure warning
+stays visible, and the token-storage safeguards are untouched.
+
+Behavior:
+- `Nav`'s Log out button calls `handleLogout`, which awaits `logout()`
+  (which always resolves and clears the session in its `finally`) and then
+  pushes `/` only when the current pathname is `/admin` or `/admin/*`.
+  Logging out from other pages keeps the previous behavior (no redirect).
+- The revocation warning lives in `AuthProvider` state, which persists
+  across client navigation, so the destination public page renders it
+  (page.tsx already shows `authError`). The `expired` flag is cleared by
+  `logout`, so no spurious expiry message appears.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Frontend `docker compose exec -T frontend npm test -- --run` → 9 files,
+  `59 passed` (was 54; +5). Container `tsc --noEmit` clean.
+  `git diff --check` clean.
+- Red proof (temporary edit, restored and re-grepped): changing the
+  redirect guard to `if (false) router.push("/")` fails exactly the 4
+  new route assertions ("routes an admin…", "still routes…", "shows the
+  public list…", "keeps the revocation warning…"); restored green.
+- Backend unchanged by this task; suite not re-run here (previous task
+  recorded 108 passed).
+
+Limitations:
+- No live browser pass: the frontend dev container still serves 500 from
+  the stale production build in its `.next` (investigated and reported
+  separately). Behavior is verified with vitest + jsdom, including a
+  Nav + public-page integration test; no service was restarted (not
+  authorized).
+- The integration test renders Nav and Home together rather than driving
+  real Next.js client routing; it models the persistent `AuthProvider`
+  across the route change.
+Remaining: independent reviewer verdict; then Status: Yes.
+Next: reviewer subagent, then stop for review. Do not deploy or start unrelated work.
+
+Review (independent subagent `ses_eb80d63a2ffeRNp725uOF02amp`): no
+BLOCKING findings; acceptance criteria met as far as read-only review
+plus permitted checks determine. It independently re-ran container
+`tsc --noEmit` (clean), the full frontend suite (`9 files / 59 passed`),
+the two named files (`19 passed`), and reproduced the red proof itself
+(disabling the redirect failed exactly the 4 new route assertions),
+restoring `nav.tsx` byte-for-byte (SHA-256 match). It also read
+auth/token_store/page/layout to confirm the warning persists via the root
+`AuthProvider` and that the token guards are untouched. Three MINOR
+findings:
+- MINOR-1 vacuous assertion: the destination test asserted absence of
+  "log in as an admin", but that phrase only lives in the (unmounted)
+  AdminPage → cannot fail. FIXED: removed it; the route assertion plus
+  the rendered public list carry the coverage.
+- MINOR-2 "no spurious session expired" banner was not asserted. FIXED:
+  both destination tests now assert the expiry alert is absent (a
+  deliberate logout clears `expired`).
+- MINOR-3 pre-existing, not introduced here: `page.test.tsx` does not
+  clear `apiMock.listEvents` call history between tests, so a shuffled
+  order fails the older stale-response test. Left unchanged to avoid
+  unrelated churn; recorded as a known hygiene item.
+Non-blocking observation: `router.push` lets browser Back return to
+`/admin` (signed-out login prompt); no data or permission is exposed and
+acceptance only requires routing to `/`.
+Corrections are test-only; suites after them: frontend `59 passed`,
+typecheck clean. Human/team-lead approval remains a separate checkpoint.
+Status: Yes.
+Next: stop for review. Do not deploy or start unrelated work.
+
+Recheck (independent subagent `ses_eb80a4c21ffeSi1ESZKUH58Ry8`): MINOR-1
+VERIFIED corrected (the vacuous "log in as an admin" assertion is gone;
+route push, public list and signed-out nav assertions remain). MINOR-2
+VERIFIED with a caveat: both destination assertions
+(`queryByText(/session expired/i)` is null) are precise and non-vacuous,
+but no test sets `expired===true` before logout, so the assertion does
+not independently pin `logout`'s `setExpired(false)`. Not fixed: with the
+current auth states, `expired===true` only ever appears together with
+`user===null` (the 401/expiry paths call `clearSession()`), so no Log out
+button is reachable while expired — pinning that line would test an
+unreachable defensive branch and repeat implementation detail. Recorded
+as a residual limitation. Recheck re-ran: `page.test.tsx` `7 passed`,
+full `9 files / 59 passed`, `tsc --noEmit` clean; no new blocking
+findings. (The reviewer's note about `nav.tsx` mtime is explained: its
+timestamp is from the reviewer's own byte-for-byte red-proof restore; the
+file was not modified after the first review.)
+
+Final state: Status Yes. Frontend `9 files / 59 passed`, container
+typecheck clean, `git diff --check` clean. Backend untouched. Not
+deployed; no unrelated changes. Stopping for review.
+
+---
+
+## Task: session races, complete booking recovery, past-event controls
+Status: Yes (reviewed; no blocking findings)
+Date: 2026-10-17
+Changed:
+- frontend/src/lib/clock.ts (new: `useNow` interval hook + `hasStarted`)
+- frontend/src/lib/auth.tsx (operation-generation guards on restoration,
+  login, logout, and expiry)
+- frontend/src/app/events/[id]/page.tsx (session-scoped booking/recovery
+  guards; full-history recovery; start-time gating + account-switch reset)
+- frontend/src/app/bookings/page.tsx (cancellation gated on start time)
+- frontend/src/lib/auth.test.tsx (+3 race regressions)
+- frontend/src/app/events/[id]/page.test.tsx (+6 race/recovery/eligibility
+  regressions)
+- frontend/src/app/bookings/page.test.tsx (+1 eligibility regression)
+- docs/TECHNICAL_DESIGN.md (auth-race, recovery, and eligibility contract)
+- docs/REQUIREMENTS.md (user-selected robustness note)
+- docs/PROGRESS.md (this entry)
+
+Scope (user-selected robustness, not PDF requirements): four requested
+fixes, each with a regression that fails against the pre-fix code.
+
+Behavior:
+1. Auth races (`auth.tsx`). A monotonic generation is bumped by every
+   login, logout, and expiry. The hydration `me` continuation, login
+   continuation, and logout `finally`/`catch` apply state only when their
+   generation is still current, so a delayed restoration or a logout that
+   resolves after a newer login can neither overwrite the new account nor
+   clear its stored token. A stale restoration 401 no longer clears a
+   newer session.
+2. Booking-session races (`events/[id]/page.tsx`). `book()` captures the
+   initiating token and re-checks `getToken()` after each await; a stale
+   create-booking success/error/recovery response cannot set another
+   session's phase, trigger its refetch, or sign it out. A recovery 401
+   calls `markSessionExpired()` only while the initiating session is still
+   current. An effect on `user?.id` resets the transient phase and
+   in-flight guard when the account changes.
+3. Complete recovery (`events/[id]/page.tsx`). `findActiveBooking` pages
+   through the actor's entire booking history (page size 10) until it finds
+   an active booking or exhausts the list. Only a completed scan may report
+   a definite absence ("Nothing was booked — try again."); a failed scan
+   reports an uncertain outcome ("We couldn't confirm whether the booking
+   went through…"). The POST is never retried automatically.
+4. Past-event controls (`events/[id]/page.tsx`, `bookings/page.tsx`).
+   Booking and cancellation disable at `starts_at <= now` with an
+   explanation, and `useNow` re-renders on a 30s interval so eligibility
+   changes while the page stays open (no reload). The backend clock stays
+   authoritative; the existing `EVENT_STARTED` handling is unchanged.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Frontend `docker compose exec -T frontend npm test -- --run` → 9 files,
+  `69 passed` (was 59; +10 new). Container `tsc --noEmit` clean.
+- Backend `docker compose --profile tools run --rm tools pytest -q` →
+  `108 passed` (backend untouched; run to confirm no drift).
+- Red proof (fixed files backed up, pre-fix behavior restored in place,
+  then restored byte-for-byte and re-verified with `diff -q`): the 10 new
+  tests failed while all 16 pre-existing tests in those three files passed
+  (`10 failed | 16 passed`). Failing names:
+  auth — delayed restoration success; delayed restoration 401; logout
+  completing after a newer login.
+  event detail — old booking 401 after switch; old booking success after
+  switch; old recovery response after switch; current-session recovery 401;
+  active booking beyond the first ten rows; event crossing its start time.
+  bookings — cancellation crossing the start time.
+  After restore: green `9 files / 69 passed`, `diff -q` identical.
+
+Limitations:
+- No live browser pass: the frontend dev container still serves 500 from
+  the stale production build in its `.next` (reported separately; restart
+  not authorized). Fixes are verified with vitest + jsdom only.
+- "Definitive absence" is reported only after `findActiveBooking` walks
+  every history page; the task's "uncertain outcome" wording is applied to
+  a verification that fails to complete (network/error), which is when
+  absence genuinely cannot be established. Recorded for reviewer scrutiny.
+- Pre-existing hygiene item unchanged: `frontend/src/app/page.test.tsx`
+  does not clear `apiMock.listEvents` between tests (fails only under a
+  shuffled order). Left to avoid unrelated churn.
+
+Review (independent subagent `ses_eb7f3fe23ffermIot00gB5eVRu`): no
+BLOCKING findings. It independently reproduced the red proof by
+reconstructing pre-fix behavior in place (`10 failed | 16 passed` for the
+three files, exactly the 10 named tests), restored the files and verified
+`sha256sum -c`/`diff -q` identical, then re-greened the full suite. It
+confirmed frontend `9 files / 69 passed`, `tsc --noEmit` clean, backend
+`108 passed`, and `git status --porcelain` unchanged. It read the
+generation guards, per-await token checks, `findActiveBooking`, and the
+clock gating; it independently confirmed the backend still rejects
+started-event mutations (`bookings.py` EVENT_STARTED at 409) so frontend
+gating is UX-only. It judged requirement 3's interpretation
+(definite absence only after a COMPLETE scan; uncertain only when the scan
+errors; never auto-retry) as satisfying the stated contract. Five MINOR
+findings:
+- MINOR-1 (coverage): the uncertain-outcome branch had no positive test
+  (only asserted absent). FIXED: added "reports an uncertain outcome when
+  verification itself fails".
+- MINOR-2 (guard scoping): `book()`'s `finally` cleared the in-flight ref
+  even for a superseded session. FIXED: reset only when
+  `getToken() === token`; the account-switch effect owns the reset after a
+  switch.
+- MINOR-5 (UX): the Book button looked actionable during the short
+  `verifying` phase. FIXED: disabled while `phase.kind === "verifying"`.
+- MINOR-3 (informational): a superseded `login` still returns its user,
+  so the login page's role-based navigation is caller-side. No session or
+  security impact in the single-form UI; left unchanged.
+- MINOR-4 (informational): the exact `starts_at === now` boundary is not
+  directly tested (only before→after crossing); operator read-correct.
+  Left unchanged.
+
+Corrections evidence (actual runs, 2026-10-17 NPT):
+- Frontend `docker compose exec -T frontend npm test -- --run` → 9 files,
+  `70 passed` (was 69; +1). Container `tsc --noEmit` clean.
+  `git diff --check` clean. Backend unchanged; reviewer's `108 passed`
+  stands.
+- Follow-up red proof for the added test (pre-fix recovery message
+  restored in place, then reverted): `npx vitest run
+  "src/app/events/[id]/page.test.tsx" -t "reports an uncertain outcome"`
+  → `1 failed | 9 skipped`; restored green.
+
+Remaining: none. Status: Yes.
+Next: stop for review. Do not deploy or start unrelated work.
+
+Recheck (same reviewer `ses_eb7f3fe23ffermIot00gB5eVRu`): all three
+corrections VERIFIED, no new blocking or minor findings.
+- MINOR-1: the new test drives the exact uncertain branch (TypeError from
+  both the POST and the history fetch) and its assertions are positive and
+  relevant; the reviewer independently reproduced the red proof by
+  restoring a pre-fix-shaped recovery message (`1 failed | 9 passed`,
+  failing only on the uncertain-message assertion) and verified a
+  byte-identical restore (final `events/[id]/page.tsx` SHA-256
+  `06ac8eb406658f242ed1eee763bc1f90ebd3677f9459046d1762f4ad030305ca`).
+- MINOR-2: traced every exit path; a token can only change through
+  `login`/`logout`/`markSessionExpired`, each of which also changes `user`
+  so the `[user?.id]` effect clears the ref. No current-session path leaves
+  the in-flight ref stuck true.
+- MINOR-5: after a definite absence the phase is `failed` (button enabled,
+  "Book one seat"), so the explicit-retry test still passes; only the brief
+  `verifying` phase disables it.
+Recheck re-ran: frontend `9 files / 70 passed`, `tsc --noEmit` clean,
+backend `108 passed`; tree unchanged (same `git status`). MINOR-3 and
+MINOR-4 remain recorded informational notes. Human/team-lead approval
+remains a separate checkpoint.
+
+Final state: Status Yes. Frontend `9 files / 70 passed`, container
+typecheck clean, `git diff --check` clean. Backend `108 passed` (unchanged).
+Deployed? No. Stopping for review.
+
+---
+
+## Task: login finalizes authentication readiness
+Status: Yes (reviewed; no blocking findings)
+Date: 2026-10-17
+Changed:
+- frontend/src/lib/auth.tsx (a current successful `login` now sets `ready`)
+- frontend/src/app/page.test.tsx (+1 readiness-race regression using the
+  real `AuthProvider` and the real `Home` page)
+- docs/TECHNICAL_DESIGN.md (auth-race paragraph)
+- docs/PROGRESS.md (this entry)
+
+Scope (user-selected robustness fix, not a PDF requirement): with account
+A's `/auth/me` restoration held open, a successful login as B left
+`ready === false` because readiness was only finalized by the restoration
+effect's `finally`. The home page gates its fetch on `ready`, so it stayed
+on "Loading events…" until A's obsolete request settled. A successful
+current login now finalizes readiness independently; the session
+generation guards are unchanged, so A's eventual success, failure, or 401
+still cannot overwrite or clear B. The four previously verified fixes and
+the logout routing/warnings are untouched.
+
+Behavior:
+- In `login`, after the generation check confirms the attempt is still
+  current, `writeToken`/`setUser` are followed by `setReady(true)`. A
+  superseded login still returns early before touching readiness.
+- The obsolete restoration's `.finally` still runs `setReady(true)`; it is
+  now redundant for this path but remains correct for the no-race case.
+
+Evidence (actual runs, 2026-10-17 NPT):
+- Frontend `docker compose exec -T frontend npm test -- --run` → 9 files,
+  `71 passed` (was 70; +1). Container `tsc --noEmit` clean.
+  `git diff --check` clean.
+- Red proof (the `setReady(true)` line temporarily removed, then
+  restored): `npx vitest run src/app/page.test.tsx --reporter=verbose` →
+  `1 failed | 7 passed`, failing only the new test at the "Beta Show"
+  listing assertion; restored green with the line re-added.
+- Regression shape: A's token in `sessionStorage` with a held-pending
+  `api.me`; B's login completes via a `useAuth` harness; the home page is
+  asserted to fetch and render "Beta Show" before A's request settles;
+  then A's restoration resolves as A and B's identity, token, rendered
+  list, and fetch count are asserted unchanged (`listEvents` called once).
+- Backend untouched by this task; the four-fix and logout-routing
+  regressions still pass inside the 71.
+
+Limitations:
+- The readiness race itself is verified with vitest + jsdom (it needs a
+  held-pending `/auth/me`, which a live browser cannot readily reproduce).
+- Correction to the previous entries' note: the dev-container 500 no
+  longer applies. Live checks on 2026-10-17: `docker compose ps` →
+  frontend `Up 12 hours (healthy)`; `GET /`, `/login`, `/bookings` → 200;
+  backend `/health` → 200; a browser load of `http://localhost:3000/`
+  renders the seeded event list (10 events) with signed-out navigation and
+  no "Loading events…" state. (The old 500s ended when the container
+  restarted; nothing was restarted for this task.)
+- The regression renders the real `AuthProvider` and `Home` together but
+  does not drive Next.js client routing; no route change is needed to
+  reproduce the readiness race.
+
+Review (independent subagent `ses_eb705b74fffePBFWbteHSFkwMR`): no
+BLOCKING findings. It verified the fix's placement (the generation check
+precedes `writeToken`/`setUser`/`setReady` with no await between them, so
+a superseded login touches neither token, user, nor readiness), confirmed
+the restoration `finally` is now a harmless no-op, and found no readiness
+inconsistency in the no-token, successful-restoration, expired,
+failed-login, or superseded-login paths. It independently reproduced the
+red proof (line removed → `1 failed | 7 passed`, failing only the new test
+at the "Beta Show" assertion with the DOM stuck on "Loading events…";
+restored byte-identical, SHA-256 match) and stress-checked the new test
+with 12 shuffled-order runs (12/12 passed, confirming its own `mockClear`
+calls make it order-independent). Full suite `9 files / 71 passed`,
+typecheck clean, backend `108 passed`; the four prior fixes and the logout
+routing/warnings regressions all pass. Two MINOR findings:
+- MINOR-1: the previous entry's "dev container serves 500" limitation was
+  stale; the reviewer's live checks (repeated above) show 200s and a
+  healthy frontend. CORRECTED in this entry; the history above is left as
+  written so the change is visible.
+- MINOR-2 (pre-existing, not introduced here): `page.test.tsx`'s
+  `afterEach` does not clear `apiMock.listEvents`, so the older
+  stale-search test fails under a shuffled order; the new test is
+  unaffected (12/12 shuffled runs). Left unchanged to avoid unrelated
+  churn; recorded again as a known hygiene item.
+
+Final state: Status Yes. Frontend `9 files / 71 passed`, container
+typecheck clean, `git diff --check` clean. Backend `108 passed` (unchanged).
+Deployed? No. Stopping for review.
+
+---
+
+## Repo hygiene before first push
+Status: Yes (record; no independent review claimed for this step)
+Date: 2026-10-17
+- Corrected two stale README claims as they were about to be published:
+  the pytest count (102 → 108, re-verified:
+  `docker compose --profile tools run --rm tools pytest -q` →
+  `108 passed, 1 warning in 18.45s`) and the "No git repository exists
+  yet" bullet (the repository exists with `origin` on GitHub).
+- Secret scan before committing: `rg` over the working tree for
+  JWT-like/Supabase/AWS credential patterns found only the Postgres role
+  name `service_role` in `backend/app/bootstrap_local.py`; `.env` files
+  are `git check-ignore`d.
+- Committed the accumulated local work as three area commits (backend,
+  frontend, docs) and pushed `main` to `origin`
+  (github.com/0xlakhe/event-booking).
+- Still not deployed; TASK-007 remains blocked on external access.

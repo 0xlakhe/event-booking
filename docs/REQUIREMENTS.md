@@ -61,6 +61,8 @@ The user has selected FastAPI and Docker Compose local development. Preserve tho
 
 ### Registered users
 
+Normal (non-admin) users:
+
 - Register, log in, and log out.
 - Book one seat for an event per booking.
 - View their own bookings.
@@ -72,6 +74,10 @@ The user has selected FastAPI and Docker Compose local development. Preserve tho
 - Each event has at least a title, description, date and time, venue, and total seats.
 - View who booked a given event.
 - Receive an admin account created through the seed script. Nobody may grant themselves admin status through the app.
+- Are management-only: admin accounts cannot book events, view a personal booking history, or cancel bookings. Those endpoints return 403 for admins; the admin panel is their interface.
+- Cannot edit or delete events that have started (backend returns 409); started events are preserved as read-only history while details and attendee lists stay readable. This is a user-selected edge-case policy, not an explicit PDF requirement.
+
+**User-selected frontend robustness (not PDF requirements):** the frontend additionally (a) reflects event-start eligibility in the UI, disabling booking and cancellation at or after `starts_at` with an explanation and updating as time passes without a reload, while the backend clock stays authoritative; (b) after a lost booking response, scans the actor's complete booking history before reporting a definite absence, and reports an uncertain outcome when that verification fails, never auto-retrying the booking; and (c) guards asynchronous auth work with an operation generation so a delayed restoration or logout for a previous account cannot overwrite or clear a newer login.
 
 ## 5. Mandatory backend rules
 
@@ -194,11 +200,11 @@ Track optional bonuses separately from required completion. Neither bonuses nor 
 Use this as the completion gate, with evidence from the live application, direct API checks, test output, and repository documentation:
 
 - [ ] Public visitors can browse upcoming events, see seats left, search by title, use server pagination, and open event details.
-- [ ] Registration, login, logout, booking, own-bookings display, and eligible cancellation work on the live site.
+- [ ] Registration, login, logout, booking, own-bookings display, and eligible cancellation work on the live site (normal users; admins receive 403 on booking endpoints).
 - [ ] Duplicate active bookings, full-event bookings, and past-event bookings fail with clear messages.
 - [ ] Rebooking after cancellation works when otherwise eligible; cancellation frees a seat.
 - [ ] Past-event cancellation and cancellation of another user's booking fail through the API.
-- [ ] Admins can create, edit, and delete events and view attendees; required event fields are present.
+- [ ] Admins can create events, edit and delete future events, and view attendees; required event fields are present. Started events are read-only.
 - [ ] Unauthenticated callers and normal users cannot perform admin operations or access attendee lists through direct API calls.
 - [ ] Capacity cannot be reduced below existing bookings, and accepted bookings never exceed capacity.
 - [ ] Public app/API operations cannot make a user an admin; the admin is seeded.

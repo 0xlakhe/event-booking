@@ -17,9 +17,10 @@
   with checks, FKs, indexes, and the partial-unique active-booking index.
 - Public browsing (`GET /api/events`, `GET /api/events/{id}`): upcoming
   only, seats left, literal title search, server pagination, past detail.
-- Own bookings (`POST /api/events/{id}/bookings`,
+- Own bookings, normal users only (`POST /api/events/{id}/bookings`,
   `GET /api/bookings/me`, `DELETE /api/bookings/{id}`): B1–B4 under the
-  event-row lock protocol, cancellation frees the seat.
+  event-row lock protocol, cancellation frees the seat; admins get 403
+  (`ADMIN_BOOKING_FORBIDDEN`) and manage events instead.
 - Admin (`GET/POST /api/admin/events`, `PATCH/DELETE
   /api/admin/events/{id}`, `GET .../attendees`): B5–B6, capacity guard,
   deletion policy, active-only attendees.
@@ -37,14 +38,17 @@
 - Deleting an event with any active booking fails (`EVENT_HAS_BOOKINGS`,
   past events included) to avoid silently cancelling attendees.
   Otherwise the event is deleted and its cancelled history cascades.
+- Started events are read-only for admins (`EVENT_STARTED` on edit or
+  delete, judged after the event lock with fresh database time); history
+  is preserved, never deleted or rewritten.
 - Event times store UTC; admin input requires an explicit offset and the
   UI presents Nepal time. Editing an event into the past is allowed but
   makes later booking/cancellation fail with `EVENT_STARTED`.
 - Least-privilege roles: runtime cannot set `users.role` (column INSERT,
   no UPDATE on `users`), cancellation flips `cancelled_at` only.
 - Repeatable seed: admin/user accounts, 13 events (12 upcoming + 1 past),
-  one admin booking leaving a capacity-2 event nearly full.
-- Isolated pytest suite (29 tests) against `eventbook_test`.
+  one normal-user booking leaving a capacity-2 event nearly full.
+- Isolated pytest suite (108 tests) against `eventbook_test`.
 
 ## Versions (provisional — no Supabase project access yet)
 
@@ -134,13 +138,17 @@ are no live URLs.
 
 ## What is NOT done
 
-- No booking/admin frontend flows yet (TASK-008: detail, bookings,
+- Full user/admin frontend flows exist (TASK-008: detail, bookings,
   admin UI, Nepal-time handling, lost-response and stale-query guards).
   Seed timestamps are relative to first seeding and age; refresh the
-  demo dataset explicitly before submission.
+  demo dataset explicitly before submission. One known live-data note:
+  the capacity-2 demo event is currently full because a real
+  non-seed account booked the last seat; see PROGRESS for the cleanup
+  decision owned by the human.
 - Backend `healthy` requires schema + revision (verified 200 since
   TASK-002 migrated).
-- No git repository exists yet, so commit hygiene is unverified. `.gitignore`
-  already ignores `.env`; verify with `git status` after `git init`.
+- Commit history has not been independently reviewed. The repository
+  exists (`main` ↔ `origin`, GitHub `0xlakhe/event-booking`) and
+  `.gitignore` excludes real `.env` files.
 - No external deployment (blocked: see Deployment above for the exact
   missing inputs). Local release artifacts verified instead.

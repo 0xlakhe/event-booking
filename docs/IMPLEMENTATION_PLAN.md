@@ -86,7 +86,7 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 - [x] Write tests for duplicate active-booking uniqueness, rebooking after cancellation, FK/check constraints, runtime role restrictions, and refusing a wrong test target before destructive operations. Run the meaningful red cases against the isolated PostgreSQL database after bootstrap is available.
 - [x] Bootstrap `eventbook_dev` and `eventbook_test` with separate migration/runtime roles. Restrict database CONNECT and private-schema grants; test roles cannot access dev, dev runtime cannot access test, public roles cannot access app tables. Handle hosted-only roles conditionally rather than requiring them on local PostgreSQL.
 - [x] Implement the four design tables, checks, FKs, indexes and column grants through a migration. Runtime cannot grant itself admin. Make the migration and runtime connection roles distinct; Alembic version-table access must support readiness without granting runtime schema ownership.
-- [x] Implement the shared Argon2id password helper and seed's stable IDs, 12 upcoming/one past event, two demo accounts, and capacity-2 event with one admin booking. Reuse the helper in TASK-003. Run seed twice; prove no duplicate records, silent credential resets, or unrelated data deletion.
+- [x] Implement the shared Argon2id password helper and seed's stable IDs, 12 upcoming/one past event, two demo accounts, and capacity-2 event with one seeded booking (admin-held at the time; moved to the normal user under the later management-only scope, see PROGRESS). Reuse the helper in TASK-003. Run seed twice; prove no duplicate records, silent credential resets, or unrelated data deletion.
 - [x] Run bootstrap → migration → seed explicitly using the technical-design commands. Start frontend/backend; confirm healthy readiness and that editing source reloads each app. Stop/restart without deleting volumes and prove records persist.
 - [x] Run future `docker compose --profile tools run --rm tools pytest` and prove its configuration refuses dev/production-like targets before migrations/cleanup. **Done:** schema/seed/grant tests pass against real PostgreSQL, both environments are isolated, and startup works from documented setup.
 
@@ -151,7 +151,7 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 | Task | Description | Completed | Date |
 | --- | --- | --- | --- |
 | TASK-007 | Early deployment checkpoint with public browsing/auth slice; depends on TASK-006. | Blocked | 2026-10-15 |
-| TASK-008 | Complete user/admin frontend and UX checks; depends on TASK-007. Local work can continue if hosting access is blocked. | No | — |
+| TASK-008 | Complete user/admin frontend and UX checks; depends on TASK-007. Local work can continue if hosting access is blocked. | Yes | 2026-10-16 |
 
 #### TASK-007 execution
 
@@ -170,12 +170,12 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 
 **Interface:** use the design's REST shapes; search/page live in URL params. Nepal timezone formatting/conversion is explicit. Authenticated HTTP responses/private client data are not cached across users.
 
-- [ ] Complete listing search and server page navigation, detail, booking, own bookings/history/cancellation, admin event list/create/edit/delete, and attendee display. Enforce backend outcomes rather than assuming visible buttons guarantee permission.
-- [ ] Add mobile layout plus loading/error/empty states for each collection/form/action. Disable duplicate submissions while pending; explain full/past/conflicting capacity/deletion errors. Refetch seats/history after success or conflict; never optimistically claim an uncommitted seat.
-- [ ] Restore/check session on reload, clear on 401, and clear all private state when user changes. Logout clears local token even on network failure and explains if server revocation did not complete. Admin navigation is role-aware while direct API protections remain authoritative.
-- [ ] Test a lost booking response: arrange a committed booking with response delivery failure, then verify UI refetches own bookings before offering another action rather than automatic POST retry. Test stale search results cannot overwrite the latest query.
-- [ ] Test with browser timezone outside Nepal: detail and admin form remain labeled Nepal time and submit explicit-offset timestamps. Verify naive API times fail and started-event buttons/errors match backend rules.
-- [ ] Run frontend build/typecheck and manually exercise visitor → user → admin flows at phone width, including empty dataset, unavailable API, expiry, and normal-user access to admin URLs. **Done:** all required role flows work with actual backend data, responsive feedback, and no cosmetic-only features.
+- [x] Complete listing search and server page navigation, detail, booking, own bookings/history/cancellation, admin event list/create/edit/delete, and attendee display. Enforce backend outcomes rather than assuming visible buttons guarantee permission.
+- [x] Add mobile layout plus loading/error/empty states for each collection/form/action. Disable duplicate submissions while pending; explain full/past/conflicting capacity/deletion errors. Refetch seats/history after success or conflict; never optimistically claim an uncommitted seat.
+- [x] Restore/check session on reload, clear on 401, clear all private state when user changes. Logout clears local token even on network failure and explains if server revocation did not complete. Admin navigation is role-aware while direct API protections remain authoritative.
+- [x] Test a lost booking response: arrange a committed booking with response delivery failure, then verify UI refetches own bookings before offering another action rather than automatic POST retry. Test stale search results cannot overwrite the latest query.
+- [x] Test with browser timezone outside Nepal: detail and admin form remain labeled Nepal time and submit explicit-offset timestamps. Verify naive API times fail and started-event buttons/errors match backend rules.
+- [x] Run frontend build/typecheck and manually exercise visitor → user → admin flows at phone width, including empty dataset, unavailable API, expiry, and normal-user access to admin URLs. **Done:** all required role flows work with actual backend data, responsive feedback, and no cosmetic-only features.
 
 ### Implementation Phase 4: Acceptance and submission readiness
 
