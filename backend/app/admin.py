@@ -4,8 +4,10 @@ Owns rules B5–B6 and the chosen deletion policy. Every mutation reuses
 the shared event-first write protocol from `app.bookings`; capacity edits
 are rejected below the active booking count, and deletion is rejected
 while any active booking exists (past events included). Otherwise the
-event is deleted and its cancelled history cascades. All routes require
-an admin actor before any data is disclosed.
+event is deleted and its cancelled history cascades. Started events are
+read-only history: edits and deletion fail with EVENT_STARTED once the
+start time has passed. All routes require an admin actor before any data
+is disclosed.
 """
 
 import re
@@ -22,7 +24,7 @@ from .bookings import write_event
 from .config import Settings
 from .db import get_engine
 from .errors import ApiError
-from .events import EventDetail, search_events, utc_z
+from .events import DEFAULT_TIME_FILTER, EventDetail, search_events, utc_z
 from .pagination import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, envelope, parse_pagination
 
 
@@ -181,6 +183,14 @@ def update_event(engine: Engine, event_id: uuid.UUID, patch: EventPatch) -> dict
             fields={"body": "Provide at least one field to update."},
         )
     with write_event(engine, event_id) as (conn, event, now_db):
+        # Started events are read-only history (user-selected edge-case
+        # policy): no edits of any kind once the start time has passed.
+        if event["starts_at"] <= now_db:
+            raise ApiError(
+                409,
+                "EVENT_STARTED",
+                "This event has already started and can no longer be changed.",
+            )
         active = _active_count(conn, str(event_id))
         if "total_seats" in changes and changes["total_seats"] < active:
             raise ApiError(
@@ -205,8 +215,19 @@ def update_event(engine: Engine, event_id: uuid.UUID, patch: EventPatch) -> dict
 
 
 def delete_event(engine: Engine, event_id: uuid.UUID) -> None:
-    """Delete when no active booking exists; cancelled history cascades."""
-    with write_event(engine, event_id) as (conn, _event, _now):
+    """Delete when future with no active booking; cancelled history cascades.
+
+    Started events are preserved as read-only history and past-event
+    deletion is rejected even with zero bookings: no historical data is
+    ever deleted or rewritten by this path.
+    """
+    with write_event(engine, event_id) as (conn, event, now_db):
+        if event["starts_at"] <= now_db:
+            raise ApiError(
+                409,
+                "EVENT_STARTED",
+                "This event has already started and can no longer be deleted.",
+            )
         active = _active_count(conn, str(event_id))
         if active > 0:
             raise ApiError(
@@ -228,13 +249,15 @@ def admin_list_events(
     request: Request,
     actor: UserActor = Depends(require_admin),
     q: str = "",
+    time_filter: str = DEFAULT_TIME_FILTER,
     page: int = DEFAULT_PAGE,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict:
     _ = actor
     settings: Settings = request.app.state.settings
     return search_events(
-        get_engine(settings), upcoming_only=False, q=q, page=page, page_size=page_size
+        get_engine(settings), q=q, page=page, page_size=page_size,
+        time_filter=time_filter, include_description=True,
     )
 
 

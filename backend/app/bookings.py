@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from .auth import UserActor, get_current_user
+from .auth import UserActor, require_non_admin
 from .config import Settings
 from .db import get_engine
 from .errors import ApiError
@@ -248,7 +248,7 @@ router = APIRouter(tags=["bookings"])
 def create_booking(
     event_id: uuid.UUID,
     request: Request,
-    actor: UserActor = Depends(get_current_user),
+    actor: UserActor = Depends(require_non_admin),
 ) -> dict:
     settings: Settings = request.app.state.settings
     return book_seat(get_engine(settings), actor, event_id)
@@ -257,7 +257,7 @@ def create_booking(
 @router.get("/api/bookings/me", response_model=dict)
 def my_bookings(
     request: Request,
-    actor: UserActor = Depends(get_current_user),
+    actor: UserActor = Depends(require_non_admin),
     page: int = DEFAULT_PAGE,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict:
@@ -269,7 +269,7 @@ def my_bookings(
 def delete_booking(
     booking_id: uuid.UUID,
     request: Request,
-    actor: UserActor = Depends(get_current_user),
+    actor: UserActor = Depends(require_non_admin),
 ) -> None:
     settings: Settings = request.app.state.settings
     cancel_booking(get_engine(settings), actor, booking_id)

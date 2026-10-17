@@ -141,6 +141,23 @@ def require_admin(actor: UserActor = Depends(get_current_user)) -> UserActor:
     return actor
 
 
+def require_non_admin(actor: UserActor = Depends(get_current_user)) -> UserActor:
+    """Normal users only: admins are management-only and never book.
+
+    Scope decision (not a PDF prohibition): booking, history, and
+    cancellation serve normal users; administrators manage events and
+    attendees instead. Runs after get_current_user, so anonymous callers
+    still receive 401 before this 403.
+    """
+    if actor.role == "admin":
+        raise ApiError(
+            403,
+            "ADMIN_BOOKING_FORBIDDEN",
+            "Booking actions are not available to administrators.",
+        )
+    return actor
+
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 

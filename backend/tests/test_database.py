@@ -16,7 +16,7 @@ from sqlalchemy import inspect
 
 from app.db import engine_from_url
 from app.passwords import hash_password
-from app.seed import _ensure_admin_booking
+from app.seed import _ensure_seed_booking
 from tests.conftest import (
     db_name_of,
     require_test_urls,
@@ -271,7 +271,7 @@ def test_seed_booking_never_overbooks_full_event(clean_db: dict[str, str]) -> No
     engine = engine_from_url(clean_db["migration_url"], pool_size=1, connect_timeout=5)
     try:
         with engine.begin() as conn:
-            admin_id, event_id = _seed_case(conn, total_seats=2, days_ahead=30)
+            user_id, event_id = _seed_case(conn, total_seats=2, days_ahead=30)
             for _ in range(2):
                 other = str(uuid.uuid4())
                 conn.execute(
@@ -299,9 +299,9 @@ def test_seed_booking_never_overbooks_full_event(clean_db: dict[str, str]) -> No
                     "INSERT INTO eventbook.bookings (id, user_id, event_id, cancelled_at) "
                     "VALUES (:id, :user_id, :event_id, now())"
                 ),
-                {"id": cancelled_id, "user_id": admin_id, "event_id": event_id},
+                {"id": cancelled_id, "user_id": user_id, "event_id": event_id},
             )
-            assert _ensure_admin_booking(conn, uuid.UUID(admin_id), uuid.UUID(event_id)) == "skipped-full"
+            assert _ensure_seed_booking(conn, uuid.UUID(user_id), uuid.UUID(event_id)) == "skipped-full"
         with engine.connect() as conn:
             (active,) = conn.execute(
                 sa_text(
@@ -328,11 +328,11 @@ def test_seed_booking_skips_past_event_and_creates_once(
     engine = engine_from_url(clean_db["migration_url"], pool_size=1, connect_timeout=5)
     try:
         with engine.begin() as conn:
-            admin_id, past_id = _seed_case(conn, total_seats=10, days_ahead=-30)
-            assert _ensure_admin_booking(conn, uuid.UUID(admin_id), uuid.UUID(past_id)) == "skipped-past"
-            admin_id2, future_id = _seed_case(conn, total_seats=10, days_ahead=30)
-            assert _ensure_admin_booking(conn, uuid.UUID(admin_id2), uuid.UUID(future_id)) == "created"
-            assert _ensure_admin_booking(conn, uuid.UUID(admin_id2), uuid.UUID(future_id)) == "present"
+            user_id, past_id = _seed_case(conn, total_seats=10, days_ahead=-30)
+            assert _ensure_seed_booking(conn, uuid.UUID(user_id), uuid.UUID(past_id)) == "skipped-past"
+            user_id2, future_id = _seed_case(conn, total_seats=10, days_ahead=30)
+            assert _ensure_seed_booking(conn, uuid.UUID(user_id2), uuid.UUID(future_id)) == "created"
+            assert _ensure_seed_booking(conn, uuid.UUID(user_id2), uuid.UUID(future_id)) == "present"
     finally:
         engine.dispose()
 

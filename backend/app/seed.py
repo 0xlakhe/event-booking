@@ -1,7 +1,7 @@
 """Repeatable demo seed for the development database (explicit runs only).
 
 Creates the admin/user accounts, 12 upcoming events plus one past event,
-and one admin booking that leaves a capacity-2 event nearly full.
+and one normal-user booking that leaves a capacity-2 event nearly full.
 Reruns create only missing rows: existing passwords, roles, timestamps,
 and non-seed data are never modified or deleted.
 """
@@ -20,7 +20,7 @@ ADMIN_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 USER_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 EVENT_IDS = [uuid.UUID(f"30000000-0000-4000-8000-{i:012d}") for i in range(1, 14)]
 
-# The nearly-full event: capacity 2 with one seeded admin booking.
+# The nearly-full event: capacity 2 with one seeded normal-user booking.
 NEARLY_FULL_INDEX = 2
 PAST_INDEX = 12
 
@@ -73,13 +73,15 @@ def _event_rows(now: datetime) -> list[dict]:
     return rows
 
 
-def _ensure_admin_booking(conn, admin_id: uuid.UUID, event_id: uuid.UUID) -> str:
-    """Ensure the seeded admin booking following the event-lock protocol.
+def _ensure_seed_booking(conn, user_id: uuid.UUID, event_id: uuid.UUID) -> str:
+    """Ensure the seeded nearly-full booking following the event-lock protocol.
 
-    Locks the event row first, then re-reads time, duplicate, and capacity
-    with fresh state. Never overbooks a full event, never books a past
-    event, and never touches cancelled history rows. Returns one of
-    "present", "created", "skipped-full", "skipped-past", "skipped-missing".
+    The booking belongs to the seeded normal user: administrators are
+    management-only and never book. Locks the event row first, then
+    re-reads time, duplicate, and capacity with fresh state. Never
+    overbooks a full event, never books a past event, and never touches
+    cancelled history rows. Returns one of "present", "created",
+    "skipped-full", "skipped-past", "skipped-missing".
     """
     event = conn.execute(
         text(
@@ -99,7 +101,7 @@ def _ensure_admin_booking(conn, admin_id: uuid.UUID, event_id: uuid.UUID) -> str
             "WHERE user_id = :user_id AND event_id = :event_id "
             "AND cancelled_at IS NULL"
         ),
-        {"user_id": str(admin_id), "event_id": str(event_id)},
+        {"user_id": str(user_id), "event_id": str(event_id)},
     ).scalar()
     if duplicate is not None:
         return "present"
@@ -119,7 +121,7 @@ def _ensure_admin_booking(conn, admin_id: uuid.UUID, event_id: uuid.UUID) -> str
         ),
         {
             "id": str(uuid.uuid4()),
-            "user_id": str(admin_id),
+            "user_id": str(user_id),
             "event_id": str(event_id),
         },
     )
@@ -177,7 +179,7 @@ def run_seed(cfg: SeedConfig) -> dict[str, int]:
                 )
                 report["events_created"] += 1
 
-        outcome = _ensure_admin_booking(conn, ADMIN_ID, EVENT_IDS[NEARLY_FULL_INDEX])
+        outcome = _ensure_seed_booking(conn, USER_ID, EVENT_IDS[NEARLY_FULL_INDEX])
         if outcome == "created":
             report["bookings_created"] += 1
         elif outcome != "present":

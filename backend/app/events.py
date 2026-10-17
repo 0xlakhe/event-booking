@@ -73,36 +73,75 @@ def escape_like(fragment: str) -> str:
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 _UPCOMING_WHERE = "e.starts_at > now()"
+_PAST_WHERE = "e.starts_at <= now()"
 _SEARCH_WHERE = " AND e.title ILIKE '%' || :pattern || '%' ESCAPE '\\'"
+
+# Ordering per time filter: upcoming nearest first, past most recent
+# first, and "all" lists the upcoming block first (nearest first) then
+# the past block (most recent first). Ties break by id in the same
+# direction as the time key.
+_UPCOMING_ORDER = "e.starts_at ASC, e.id ASC"
+_PAST_ORDER = "e.starts_at DESC, e.id DESC"
+_ALL_ORDER = (
+    "CASE WHEN e.starts_at > now() THEN 0 ELSE 1 END, "
+    "CASE WHEN e.starts_at > now() THEN e.starts_at END ASC, "
+    "CASE WHEN e.starts_at <= now() THEN e.starts_at END DESC, "
+    "CASE WHEN e.starts_at > now() THEN e.id END ASC, "
+    "CASE WHEN e.starts_at <= now() THEN e.id END DESC"
+)
+
+# time filter value -> (WHERE fragment, ORDER BY fragment)
+_TIME_FILTERS = {
+    "upcoming": (_UPCOMING_WHERE, _UPCOMING_ORDER),
+    "past": (_PAST_WHERE, _PAST_ORDER),
+    "all": ("TRUE", _ALL_ORDER),
+}
+DEFAULT_TIME_FILTER = "upcoming"
+
+
+def parse_time_filter(raw: str) -> str:
+    """Validate the admin time filter; unknown values are a 422."""
+    if raw not in _TIME_FILTERS:
+        raise ApiError(
+            422,
+            "VALIDATION_ERROR",
+            "Invalid input.",
+            fields={"time_filter": "Filter must be upcoming, past, or all."},
+        )
+    return raw
 
 
 def search_events(
     engine: Engine,
     *,
-    upcoming_only: bool,
     q: str,
     page: int,
     page_size: int,
+    time_filter: str = DEFAULT_TIME_FILTER,
+    include_description: bool = False,
 ) -> dict:
     """Filtered, paginated event summaries with seat counts.
 
-    Count and items share one short REPEATABLE READ transaction with
-    identical filters; seats come from a single bounded aggregate.
+    The time filter (upcoming/past/all) and title search apply to the
+    count and the page items alike, before pagination, inside one short
+    REPEATABLE READ transaction; seats come from a single bounded
+    aggregate.
     """
     page, page_size = parse_pagination(page, page_size)
+    time_filter = parse_time_filter(time_filter)
+    where, order_by = _TIME_FILTERS[time_filter]
     query = parse_search(q)
     pattern = escape_like(query) if query is not None else None
-    where = (_UPCOMING_WHERE if upcoming_only else "TRUE") + (
-        _SEARCH_WHERE if pattern is not None else ""
-    )
+    conditions = where + (_SEARCH_WHERE if pattern is not None else "")
     offset = (page - 1) * page_size
+    description_column = "e.description, " if include_description else ""
     params: dict = {"limit": page_size, "offset": offset}
     if pattern is not None:
         params["pattern"] = pattern
     with engine.begin() as conn:
         conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         (total,) = conn.execute(
-            text(f"SELECT count(*) FROM eventbook.events e WHERE {where}"),
+            text(f"SELECT count(*) FROM eventbook.events e WHERE {conditions}"),
             params,
         ).fetchone()
         # Out-of-range pages return an empty collection per contract. The
@@ -114,13 +153,14 @@ def search_events(
             else conn.execute(
                 text(
                     "SELECT e.id, e.title, e.starts_at, e.venue, e.total_seats, "
+                    f"{description_column}"
                     "e.total_seats - COUNT(b.id) AS seats_left "
                     "FROM eventbook.events e "
                     "LEFT JOIN eventbook.bookings b "
                     "ON b.event_id = e.id AND b.cancelled_at IS NULL "
-                    f"WHERE {where} "
+                    f"WHERE {conditions} "
                     "GROUP BY e.id "
-                    "ORDER BY e.starts_at ASC, e.id ASC "
+                    f"ORDER BY {order_by} "
                     "LIMIT :limit OFFSET :offset"
                 ),
                 params,
@@ -129,13 +169,14 @@ def search_events(
             .all()
         )
     items = [
-        EventSummary(
+        (EventDetail if include_description else EventSummary)(
             id=row["id"],
             title=row["title"],
             starts_at=utc_z(row["starts_at"]),
             venue=row["venue"],
             total_seats=row["total_seats"],
             seats_left=row["seats_left"],
+            **({"description": row["description"]} if include_description else {}),
         ).model_dump(mode="json")
         for row in rows
     ]
@@ -147,7 +188,7 @@ def list_events(
     request: Request, q: str = "", page: int = DEFAULT_PAGE, page_size: int = DEFAULT_PAGE_SIZE
 ) -> dict:
     settings: Settings = request.app.state.settings
-    return search_events(get_engine(settings), upcoming_only=True, q=q, page=page, page_size=page_size)
+    return search_events(get_engine(settings), q=q, page=page, page_size=page_size)
 
 
 @router.get("/{event_id}", response_model=dict)
