@@ -2775,3 +2775,87 @@ Limitations and remaining gate:
   independent milestone review / human checkpoint.
 - Local `.openchamber/` screenshot artifacts remain untracked and were not
   included in either release commit.
+
+## Admin attendee loading feedback (2026-10-18, NPT)
+
+Scope: improve feedback while the admin attendee endpoint is pending. Frontend
+only; no backend, database, session, production data, or deployment changes.
+
+Implementation:
+- The selected event's attendee panel opens immediately with an accessible
+  `Loading attendees…` status. `aria-busy` applies to the list, not its live
+  status, so assistive technology can announce the pending state.
+- Pagination keeps the last successful page visible for the same event while
+  loading and does not label the requested page as current. Pagination buttons
+  are disabled during a request to prevent duplicate requests.
+- Switching event, account, or list context hides/clears prior attendee data;
+  request IDs, token checks, and owner checks prevent stale responses from
+  populating the new context. Closing the panel invalidates its in-flight
+  request. Errors remain visible with an in-panel Retry action.
+- Changed `frontend/src/app/admin/page.tsx`, its tests, and the attendee status
+  styling in `frontend/src/app/globals.css`.
+
+Verification (2026-10-18, NPT):
+- TDD RED: the new delayed-loading/context/retry regressions initially failed
+  (3 failing, 14 passing) because the panel stayed hidden while loading and
+  failures had no in-panel retry action.
+- `cd frontend && npm test -- --run src/app/admin/page.test.tsx` → 17 passed.
+- `cd frontend && npm test -- --run` → 11 files, 126 passed.
+- `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Fresh reviewer Nietzsche (`01a14e4c-6660-7d80-b77a-176a188aba56`) initially
+  found P2: the live status was inside the `aria-busy` panel. Moved
+  `aria-busy` to the attendee list and kept the status outside it. Reviewer
+  recheck confirmed the blocker resolved and found no new blockers. The
+  pagination-failure-specific retry test was recorded as a non-blocking
+  suggestion; initial failure/retry and pending-pagination behavior are
+  covered. Review was read-only; reviewer independently ran the focused and
+  full frontend suites, typecheck, and diff check successfully.
+
+Limitations: no production request using an admin session, browser visual
+check, or screen-reader test was performed. This change is local and has not
+been committed, pushed, or deployed. No production data or sessions were used.
+
+## TASK-008 bounded public-list and own-bookings cache follow-up (2026-10-18, NPT)
+
+Scope: improve return-navigation responsiveness without persisting data or
+weakening backend authority. Frontend only; TASK-007/TASK-008 milestone status
+and existing human approval gates are unchanged.
+
+Implementation:
+- Public event-list results use a memory-only eight-entry LRU keyed by exact
+  query and page with a 30-minute TTL. Matching cache hits display immediately
+  while revalidation runs; the currently active list-origin snapshot shares and
+  pins the same cache entry. Public detail/list caches are invalidated after
+  booking, cancellation, and admin event create/edit/delete mutations.
+- Own-bookings results use a separate memory-only eight-entry LRU keyed by an
+  ephemeral session identity and page with a 60-second TTL. The cache populates
+  only when the bookings page is visited. It stores no token and clears
+  synchronously on logout/expiry and successful login/session restoration;
+  booking/cancellation invalidate the active session's entries.
+- Route return and same-session bookings render cached rows as updating while
+  refreshing. Availability and mutations remain backend-authoritative. A
+  confirmed cancellation removes its row immediately before the refreshed
+  bookings response arrives.
+- Updated `docs/TECHNICAL_DESIGN.md` with these bounds and lifecycle contracts.
+  This did not alter REST/API or database contracts.
+
+Verification (2026-10-18, NPT):
+- New delayed route-return, same-session cache, session-change, logout, expiry,
+  TTL, exact-key, LRU, origin-pinning, and cancellation regressions were added.
+  The cache rendering/logout regressions were observed failing before their
+  implementation; the reviewer-discovered cancellation regression was added
+  and observed failing before its correction.
+- `cd frontend && npm test -- --run` → 12 files, 135 passed.
+- `cd frontend && npm run typecheck` → clean.
+- `git diff --check` → clean.
+- Fresh independent reviewer Hooke (`01a14e54-7d32-76e0-9cdb-2ed300671ba0`)
+  found P2: a successfully cancelled row remained visible until revalidation.
+  Cleared rendered booking rows immediately after confirmed cancellation and
+  added a regression. Reviewer recheck confirmed the blocker resolved; focused
+  `npm test -- --run src/app/bookings/page.test.tsx` → 22 passed. Reviewer also
+  independently ran the full suite (12 files, 135 passed) and typecheck before
+  the correction. Review and tests used no production data or sessions.
+
+Limitations: no visual browser verification was performed. Changes are local;
+not committed, pushed, or deployed. The `.openchamber/` artifacts are unrelated
+untracked files and were left untouched.

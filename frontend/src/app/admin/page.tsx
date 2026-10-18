@@ -9,8 +9,12 @@ import { ApiRequestError, adminApi, api, type Attendee, type EventDetail, type T
 import { useAuth } from "../../lib/auth";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
 import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
+import { invalidatePublicEventLists } from "../../lib/event_list_navigation";
 
 const PAGE_SIZE = 10;
+
+type AttendeeRequest = { eventId: string; page: number; ownerId: string };
+type AttendeeFailure = AttendeeRequest & { message: string };
 
 const TIME_FILTERS: { value: TimeFilter; label: string }[] = [
   { value: "upcoming", label: "Upcoming" },
@@ -72,9 +76,13 @@ function Admin() {
   const [editing, setEditing] = useState<EventDetail | null>(null);
   const [saving, setSaving] = useState(false);
   const [attendeesFor, setAttendeesFor] = useState<string | null>(null);
+  const [attendeesOwnerId, setAttendeesOwnerId] = useState<string | null>(null);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [attendeesTotal, setAttendeesTotal] = useState(0);
   const [attendeesPage, setAttendeesPage] = useState(1);
+  const [attendeesLoaded, setAttendeesLoaded] = useState(false);
+  const [attendeesLoading, setAttendeesLoading] = useState<AttendeeRequest | null>(null);
+  const [attendeesFailure, setAttendeesFailure] = useState<AttendeeFailure | null>(null);
   const listRequestId = useRef(0);
   const attendeesRequestId = useRef(0);
 
@@ -83,10 +91,14 @@ function Admin() {
   useEffect(() => {
     attendeesRequestId.current += 1;
     setAttendeesFor(null);
+    setAttendeesOwnerId(null);
     setAttendees([]);
     setAttendeesTotal(0);
     setAttendeesPage(1);
-  }, [user?.id]);
+    setAttendeesLoaded(false);
+    setAttendeesLoading(null);
+    setAttendeesFailure(null);
+  }, [user?.id, query, timeFilter, page]);
 
   const load = useCallback(async () => {
     const token = getToken();
@@ -134,30 +146,62 @@ function Admin() {
   const loadAttendees = useCallback(
     async (eventId: string, attendeesPageNumber: number) => {
       const token = getToken();
-      if (token === null) return;
+      const ownerId = user?.id;
+      if (token === null || ownerId === undefined) return;
       const id = ++attendeesRequestId.current;
+      const sameContext = attendeesFor === eventId && attendeesOwnerId === ownerId;
+      if (!sameContext) {
+        setAttendeesFor(eventId);
+        setAttendeesOwnerId(ownerId);
+        setAttendees([]);
+        setAttendeesTotal(0);
+        setAttendeesPage(1);
+        setAttendeesLoaded(false);
+      }
+      setAttendeesFailure(null);
+      setAttendeesLoading({ eventId, page: attendeesPageNumber, ownerId });
       try {
         const body = await adminApi.attendees(token, eventId, attendeesPageNumber, PAGE_SIZE);
-        if (attendeesRequestId.current !== id) return;
+        if (attendeesRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
         setAttendees(body.items);
         setAttendeesTotal(body.total);
         setAttendeesPage(attendeesPageNumber);
         setAttendeesFor(eventId);
+        setAttendeesOwnerId(ownerId);
+        setAttendeesLoaded(true);
       } catch (err: unknown) {
-        if (attendeesRequestId.current !== id) return;
+        if (attendeesRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
         if (err instanceof ApiRequestError && err.status === 401) {
           markSessionExpired();
           return;
         }
-        setFailure(
-          err instanceof ApiRequestError
+        setAttendeesFailure({
+          eventId,
+          page: attendeesPageNumber,
+          ownerId,
+          message: err instanceof ApiRequestError
             ? adminErrorMessage(err.code, err.message)
             : "Could not load attendees.",
-        );
+        });
+      } finally {
+        if (attendeesRequestId.current === id) setAttendeesLoading(null);
       }
     },
-    [getToken, markSessionExpired],
+    [attendeesFor, attendeesOwnerId, getToken, markSessionExpired, user?.id],
   );
+
+  function closeAttendees(eventId: string) {
+    if (attendeesFor !== eventId) return;
+    attendeesRequestId.current += 1;
+    setAttendeesFor(null);
+    setAttendeesOwnerId(null);
+    setAttendees([]);
+    setAttendeesTotal(0);
+    setAttendeesPage(1);
+    setAttendeesLoaded(false);
+    setAttendeesLoading(null);
+    setAttendeesFailure(null);
+  }
 
   async function startEdit(eventId: string) {
     setFailure(null);
@@ -190,6 +234,7 @@ function Admin() {
         invalidatePublicEventDetail(editing.id);
         setEditing(null);
       }
+      invalidatePublicEventLists();
       await load();
     } catch (err: unknown) {
       if (err instanceof ApiRequestError && err.status === 401) {
@@ -215,6 +260,7 @@ function Admin() {
     try {
       await adminApi.deleteEvent(token, eventId);
       invalidatePublicEventDetail(eventId);
+      invalidatePublicEventLists();
       if (attendeesFor === eventId) setAttendeesFor(null);
       await load();
     } catch (err: unknown) {
@@ -382,21 +428,34 @@ function Admin() {
                     )}
                     <button
                       type="button"
-                      aria-expanded={attendeesFor === event.id}
+                      aria-expanded={attendeesFor === event.id && attendeesOwnerId === user?.id}
                       onClick={() => {
-                        if (attendeesFor === event.id) setAttendeesFor(null);
+                        if (attendeesFor === event.id && attendeesOwnerId === user?.id) closeAttendees(event.id);
                         else void loadAttendees(event.id, 1);
                       }}
                     >
-                      {attendeesFor === event.id ? "Hide attendees" : "Attendees"}
+                      {attendeesFor === event.id && attendeesOwnerId === user?.id ? "Hide attendees" : "Attendees"}
                     </button>
                   </div>
                 )}
-                {attendeesFor === event.id && (
+                {attendeesFor === event.id && attendeesOwnerId === user?.id && (
                   <div className="attendee-panel">
-                    <h3>Attendees ({attendeesTotal})</h3>
-                    {attendees.length === 0 && <p className="muted">No active bookings.</p>}
-                    <ul className="attendee-list">
+                    <h3>Attendees{attendeesLoaded ? ` (${attendeesTotal})` : ""}</h3>
+                    {attendeesLoading?.eventId === event.id && attendeesLoading.ownerId === user?.id && (
+                      <p className="attendee-loading-status" role="status">Loading attendees…</p>
+                    )}
+                    {attendeesFailure?.eventId === event.id && attendeesFailure.ownerId === user?.id && (
+                      <p role="alert">
+                        {attendeesFailure.message}{" "}
+                        <button type="button" onClick={() => void loadAttendees(event.id, attendeesFailure.page)}>
+                          Retry
+                        </button>
+                      </p>
+                    )}
+                    {attendeesLoaded && attendees.length === 0 && attendeesTotal === 0 && (
+                      <p className="muted">No active bookings.</p>
+                    )}
+                    <ul className="attendee-list" aria-busy={attendeesLoading?.eventId === event.id && attendeesLoading.ownerId === user?.id}>
                       {attendees.map((entry) => (
                         <li key={entry.booking_id}>
                           <span>{entry.user.email}</span>
@@ -408,14 +467,14 @@ function Admin() {
                       <p className="button-row">
                         <button
                           type="button"
-                          disabled={attendeesPage <= 1}
+                          disabled={attendeesPage <= 1 || (attendeesLoading?.eventId === event.id && attendeesLoading.ownerId === user?.id)}
                           onClick={() => void loadAttendees(event.id, attendeesPage - 1)}
                         >
                           Previous
                         </button>{" "}
                         <button
                           type="button"
-                          disabled={attendeesPage >= attendeePages}
+                          disabled={attendeesPage >= attendeePages || (attendeesLoading?.eventId === event.id && attendeesLoading.ownerId === user?.id)}
                           onClick={() => void loadAttendees(event.id, attendeesPage + 1)}
                         >
                           Next

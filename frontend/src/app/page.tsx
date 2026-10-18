@@ -8,7 +8,10 @@ import { useAuth } from "../lib/auth";
 import { formatNepal, NEPAL_LABEL } from "../lib/datetime";
 import { getCachedPublicEventDetail, loadPublicEventDetail, prefetchPublicEventDetail } from "../lib/public_event_cache";
 import {
+  cachePublicEventList,
+  getCachedPublicEventList,
   getEventListOriginForHref,
+  getEventListSnapshotForOrigin,
   consumeEventListOrigin,
   rememberEventListOrigin,
   type EventListOrigin,
@@ -65,6 +68,7 @@ function Listing() {
       const body = await api.listEvents(query, page, PAGE_SIZE);
       // Discard stale responses: only the latest query may render.
       if (requestId.current !== id) return;
+      cachePublicEventList(query, page, { items: body.items, total: body.total });
       setItems(body.items);
       setTotal(body.total);
       setLoadedKey(key);
@@ -127,21 +131,29 @@ function Listing() {
   useBrowserLayoutEffect(() => {
     const href = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const origin = getEventListOriginForHref(href);
-    if (origin?.snapshot === undefined || restoringOrigin.current !== null) return;
-    restoringOrigin.current = origin;
-    setItems(origin.snapshot.items);
-    setTotal(origin.snapshot.total);
+    const originSnapshot = origin === null ? null : getEventListSnapshotForOrigin(origin);
+    restoringOrigin.current = originSnapshot === null ? null : origin;
+    const snapshot = getCachedPublicEventList(query, page);
     setLoadedKey(currentKey);
     setFailure(null);
     setFailureKey(null);
-    setState(origin.snapshot.items.length === 0 ? "empty" : "pending");
-  }, [currentKey]);
+    if (snapshot === null) {
+      setItems([]);
+      setTotal(0);
+      setLoadedKey(null);
+      setState("pending");
+      return;
+    }
+    setItems(snapshot.items);
+    setTotal(snapshot.total);
+    setState("pending");
+  }, [currentKey, page, query]);
 
   useBrowserLayoutEffect(() => {
     const origin = restoringOrigin.current;
     if (origin === null || !hasCurrentResults) return;
     const href = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (getEventListOriginForHref(href) !== origin) return;
+    if (getEventListOriginForHref(href) !== origin || getEventListSnapshotForOrigin(origin) === null) return;
     const restoreKey = `${origin.eventId}:${origin.href}:${origin.capturedAt}`;
     if (restoredOrigin.current === restoreKey) return;
 

@@ -98,6 +98,106 @@ describe("started events are read-only", () => {
     expect(apiMock.attendees).toHaveBeenCalledTimes(1);
   });
 
+  it("opens an accessible loading panel immediately and ignores duplicate pagination requests", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.listEvents.mockResolvedValue({
+      items: [summary("Attendee Event", "2030-01-01T10:00:00Z")],
+      total: 1,
+    });
+    let resolveFirstPage!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
+    apiMock.attendees.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveFirstPage = resolve)),
+    );
+    let resolveSecondPage!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
+    apiMock.attendees.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveSecondPage = resolve)),
+    );
+    render(<AuthProvider><AdminPage /></AuthProvider>);
+    await screen.findByText("Attendee Event");
+
+    fireEvent.click(screen.getByRole("button", { name: "Attendees" }));
+    expect(screen.getByRole("status").textContent).toMatch(/loading attendees/i);
+    expect(screen.getByRole("button", { name: "Hide attendees" })).toBeTruthy();
+    expect(apiMock.attendees).toHaveBeenCalledTimes(1);
+
+    resolveFirstPage({
+      items: Array.from({ length: 10 }, (_, index) => ({
+        booking_id: `booking-${index}`,
+        booked_at: "2030-01-01T00:00:00Z",
+        user: { email: `attendee-${index}@example.com` },
+      })),
+      total: 11,
+    });
+    const heading = await screen.findByRole("heading", { name: "Attendees (11)" });
+    const panel = heading.closest<HTMLElement>(".attendee-panel");
+    if (panel === null) throw new Error("Attendee panel is missing.");
+    const next = within(panel).getByRole("button", { name: "Next" });
+    fireEvent.click(next);
+    expect(screen.getByRole("status").textContent).toMatch(/loading attendees/i);
+    expect(screen.getByText("attendee-0@example.com")).toBeTruthy();
+    expect(next.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(next);
+    expect(apiMock.attendees).toHaveBeenCalledTimes(2);
+
+    resolveSecondPage({
+      items: [{ booking_id: "booking-10", booked_at: "2030-01-02T00:00:00Z", user: { email: "attendee-10@example.com" } }],
+      total: 11,
+    });
+    expect(await screen.findByText("attendee-10@example.com")).toBeTruthy();
+    expect(screen.queryByText("attendee-0@example.com")).toBeNull();
+  });
+
+  it("does not show old event attendees while another event is loading or after a stale response", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.listEvents.mockResolvedValue({
+      items: [summary("Event A", "2030-01-01T10:00:00Z"), summary("Event B", "2030-01-02T10:00:00Z")],
+      total: 2,
+    });
+    let resolveEventA!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
+    let resolveEventB!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
+    apiMock.attendees
+      .mockImplementationOnce(() => new Promise((resolve) => void (resolveEventA = resolve)))
+      .mockImplementationOnce(() => new Promise((resolve) => void (resolveEventB = resolve)));
+    render(<AuthProvider><AdminPage /></AuthProvider>);
+    await screen.findByText("Event A");
+
+    fireEvent.click(within(screen.getByText("Event A").closest("li")!).getByRole("button", { name: "Attendees" }));
+    expect(screen.getByRole("status").textContent).toMatch(/loading attendees/i);
+    fireEvent.click(within(screen.getByText("Event B").closest("li")!).getByRole("button", { name: "Attendees" }));
+    expect(screen.queryByText("attendee-a@example.com")).toBeNull();
+    expect(apiMock.attendees).toHaveBeenCalledTimes(2);
+
+    resolveEventA({
+      items: [{ booking_id: "a", booked_at: "2030-01-01T00:00:00Z", user: { email: "attendee-a@example.com" } }],
+      total: 1,
+    });
+    expect(screen.queryByText("attendee-a@example.com")).toBeNull();
+    resolveEventB({
+      items: [{ booking_id: "b", booked_at: "2030-01-02T00:00:00Z", user: { email: "attendee-b@example.com" } }],
+      total: 1,
+    });
+    expect(await screen.findByText("attendee-b@example.com")).toBeTruthy();
+    expect(screen.queryByText("attendee-a@example.com")).toBeNull();
+  });
+
+  it("keeps attendee failures retryable in the open event panel", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.listEvents.mockResolvedValue({ items: [summary("Retry Event", "2030-01-01T10:00:00Z")], total: 1 });
+    apiMock.attendees
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ items: [], total: 0 });
+    render(<AuthProvider><AdminPage /></AuthProvider>);
+    await screen.findByText("Retry Event");
+
+    fireEvent.click(screen.getByRole("button", { name: "Attendees" }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(retry.parentElement?.textContent).toMatch(/could not load attendees/i);
+    fireEvent.click(retry);
+    expect(screen.getByRole("status").textContent).toMatch(/loading attendees/i);
+    await screen.findByText("No active bookings.");
+    expect(apiMock.attendees).toHaveBeenCalledTimes(2);
+  });
+
   it("expands and collapses overflowing descriptions independently with accessible controls", async () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
       return this.classList.contains("event-description") ? 120 : 0;
@@ -360,9 +460,12 @@ describe("admin list refresh context", () => {
       user: ADMIN_B,
     });
     let resolveAttendees!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
-    apiMock.attendees.mockImplementation(
-      () => new Promise((resolve) => void (resolveAttendees = resolve)),
-    );
+    apiMock.attendees
+      .mockResolvedValueOnce({
+        items: [{ booking_id: "loaded-a", booked_at: "2030-01-01T00:00:00Z", user: { email: "private-a@example.com" } }],
+        total: 1,
+      })
+      .mockImplementationOnce(() => new Promise((resolve) => void (resolveAttendees = resolve)));
     apiMock.listEvents.mockResolvedValueOnce({
       items: [summary("Admin A Event", "2030-01-01T10:00:00Z")],
       total: 1,
@@ -379,7 +482,10 @@ describe("admin list refresh context", () => {
     );
     await screen.findByText("Admin A Event");
     fireEvent.click(screen.getByRole("button", { name: "Attendees" }));
-    await waitFor(() => expect(apiMock.attendees).toHaveBeenCalledTimes(1));
+    await screen.findByText("private-a@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Hide attendees" }));
+    fireEvent.click(screen.getByRole("button", { name: "Attendees" }));
+    await waitFor(() => expect(apiMock.attendees).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByText("switch-admin", { selector: "button" }));
     resolveAttendees({

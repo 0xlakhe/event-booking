@@ -10,7 +10,7 @@ import { AuthProvider, useAuth } from "../lib/auth";
 import { readToken, resetTokenStoreForTests } from "../lib/token_store";
 import type { EventDetail, EventSummary } from "../lib/api";
 import DetailPage from "./events/[id]/page";
-import { clearEventListOrigin, getEventListOriginForEvent, rememberEventListOrigin } from "../lib/event_list_navigation";
+import { clearEventListOrigin, clearPublicEventListCache, getEventListOriginForEvent, rememberEventListOrigin } from "../lib/event_list_navigation";
 import { getCachedPublicEventDetail } from "../lib/public_event_cache";
 
 let queryValue = "";
@@ -61,6 +61,7 @@ afterEach(() => {
   routeState.id = "id-Warm Detail";
   window.history.replaceState({}, "", "/");
   clearEventListOrigin();
+  clearPublicEventListCache();
   routerMock.push.mockClear();
   routerMock.replace.mockClear();
   routerMock.back.mockClear();
@@ -72,6 +73,35 @@ afterEach(() => {
 });
 
 describe("stale search responses", () => {
+  it("restores an exact prior query and page immediately while refreshing it", async () => {
+    apiMock.listEvents.mockReset();
+    apiMock.listEvents
+      .mockResolvedValueOnce({ items: [event("Ceramics Page Two")], total: 21 })
+      .mockResolvedValueOnce({ items: [event("Music Page One")], total: 1 });
+    let resolveRefresh!: (body: { items: EventSummary[]; total: number }) => void;
+    apiMock.listEvents.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefresh = resolve)),
+    );
+    queryValue = "q=ceramics&page=2";
+    const view = render(<AuthProvider><Home /></AuthProvider>);
+    await screen.findByText("Ceramics Page Two");
+
+    queryValue = "q=music&page=1";
+    view.rerender(<AuthProvider><Home /></AuthProvider>);
+    await screen.findByText("Music Page One");
+
+    queryValue = "q=ceramics&page=2";
+    view.rerender(<AuthProvider><Home /></AuthProvider>);
+    await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledTimes(3));
+    expect(screen.getByText("Ceramics Page Two")).not.toBeNull();
+    expect(screen.queryByText("Music Page One")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/updating events/i);
+
+    resolveRefresh({ items: [event("Fresh Ceramics Page Two")], total: 21 });
+    await screen.findByText("Fresh Ceramics Page Two");
+    expect(screen.queryByText("Ceramics Page Two")).toBeNull();
+  });
+
   it("does not present previous-query events as the new results", async () => {
     apiMock.listEvents.mockReset();
     apiMock.listEvents.mockResolvedValueOnce({ items: [event("Old Query")], total: 1 });
@@ -653,8 +683,8 @@ describe("event intent prefetch and list restoration", () => {
         <Home />
       </AuthProvider>,
     );
-    expect(screen.queryByText("Page Two")).toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
+    expect(screen.getByText("Restored Page Two")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/updating events/i);
     expect(scrollTo).toHaveBeenCalledTimes(1);
     await act(async () => resolveUnrelatedReturn({ items: [event("Unrelated Return")], total: 21 }));
   });

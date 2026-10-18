@@ -190,6 +190,7 @@ ul:has(> .card) { padding: 0; }
 .form-panel { margin-bottom: 1.75rem; }
 .attendee-panel { border-top: 1px solid var(--line); padding-top: 1.5rem; margin-top: 1.5rem; }
 .attendee-panel h3 { font-size: 1rem; }
+.attendee-panel .attendee-loading-status { margin: 0.75rem 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 0.9rem; }
 .attendee-list { list-style: none; padding: 0; margin: 0; }
 .attendee-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem 1.5rem; padding: 0.9rem 0; border-bottom: 1px solid var(--line); font-size: 0.875rem; }
 .attendee-list time { color: var(--muted); font-size: 0.8rem; }

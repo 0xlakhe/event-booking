@@ -5,9 +5,11 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { AuthProvider, useAuth } from "../../lib/auth";
 import { resetTokenStoreForTests } from "../../lib/token_store";
 import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../lib/public_event_cache";
+import { clearOwnBookingsCache } from "../../lib/own_bookings_cache";
 import BookingsPage from "./page";
 
 const { apiMock } = vi.hoisted(() => ({
@@ -72,9 +74,11 @@ afterEach(() => {
   vi.useRealTimers();
   sessionStorage.clear();
   resetTokenStoreForTests();
+  clearOwnBookingsCache();
 });
 
 beforeEach(() => {
+  currentUser = USER_A;
   if (typeof HTMLDialogElement.prototype.showModal !== "function") {
     Object.defineProperties(HTMLDialogElement.prototype, {
       showModal: {
@@ -109,6 +113,26 @@ describe("sign-out clears bookings", () => {
     );
     expect(screen.queryByText("Lockable Night")).toBeNull();
   });
+
+  it("clears cached private rows before server logout resolves", async () => {
+    apiMock.login.mockResolvedValue({
+      access_token: "tok-logout",
+      token_type: "bearer",
+      expires_at: "2030-01-01T00:00:00Z",
+      user: USER_A,
+    });
+    apiMock.myBookings.mockResolvedValue({ items: [BOOKING], total: 1 });
+    let resolveLogout!: () => void;
+    apiMock.logout.mockImplementation(() => new Promise<void>((resolve) => void (resolveLogout = resolve)));
+    render(<AuthProvider><LogoutHarness /></AuthProvider>);
+    fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+    await screen.findByText("Lockable Night");
+
+    fireEvent.click(screen.getByText("sign-out", { selector: "button" }));
+    await waitForGone("Lockable Night");
+    expect(apiMock.logout).toHaveBeenCalledWith("tok-logout");
+    resolveLogout();
+  });
 });
 
 function SignInHarness() {
@@ -119,6 +143,28 @@ function SignInHarness() {
       <button type="button" onClick={() => void login("a@example.com", "password-123")}>
         sign-in
       </button>
+    </>
+  );
+}
+
+function BookingsRouteHarness() {
+  const { login } = useAuth();
+  const [showBookings, setShowBookings] = useState(true);
+  return (
+    <>
+      {showBookings && <BookingsPage />}
+      <button type="button" onClick={() => setShowBookings((current) => !current)}>toggle-bookings</button>
+      <button type="button" onClick={() => void login("a@example.com", "password-123")}>sign-in</button>
+    </>
+  );
+}
+
+function SameUserSessionHarness() {
+  const { login } = useAuth();
+  return (
+    <>
+      <BookingsPage />
+      <button type="button" onClick={() => void login("a@example.com", "password-123")}>login-session</button>
     </>
   );
 }
@@ -190,6 +236,57 @@ describe("account switching scopes rows immediately", () => {
     resolveBeta({ items: [bookingFor("Beta Night", "b1")], total: 1 });
     await screen.findByText("Beta Night");
     expect(screen.queryByText("Alpha Night")).toBeNull();
+  });
+});
+
+describe("cached booking returns", () => {
+  it("renders same-session bookings immediately while the route refreshes them", async () => {
+    apiMock.login.mockResolvedValue({
+      access_token: "tok-A",
+      token_type: "bearer",
+      expires_at: "2030-01-01T00:00:00Z",
+      user: USER_A,
+    });
+    apiMock.me.mockResolvedValue(USER_A);
+    apiMock.myBookings.mockResolvedValueOnce({ items: [BOOKING], total: 1 });
+    let resolveRefresh!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefresh = resolve)),
+    );
+    render(<AuthProvider><BookingsRouteHarness /></AuthProvider>);
+    fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+    await screen.findByText("Lockable Night");
+
+    fireEvent.click(screen.getByText("toggle-bookings", { selector: "button" }));
+    fireEvent.click(screen.getByText("toggle-bookings", { selector: "button" }));
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/updating bookings/i);
+
+    resolveRefresh({ items: [bookingFor("Fresh Night", "fresh")], total: 1 });
+    await screen.findByText("Fresh Night");
+  });
+
+  it("clears prior-session rows when the same account receives a new session", async () => {
+    apiMock.login
+      .mockResolvedValueOnce({ access_token: "tok-A", token_type: "bearer", expires_at: "2030-01-01T00:00:00Z", user: USER_A })
+      .mockResolvedValueOnce({ access_token: "tok-B", token_type: "bearer", expires_at: "2030-01-01T00:00:00Z", user: USER_A });
+    apiMock.me.mockResolvedValue(USER_A);
+    apiMock.myBookings.mockResolvedValueOnce({ items: [bookingFor("Old Session Night", "old-session")], total: 1 });
+    let resolveNewSession!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveNewSession = resolve)),
+    );
+    render(<AuthProvider><SameUserSessionHarness /></AuthProvider>);
+    fireEvent.click(screen.getByText("login-session", { selector: "button" }));
+    await screen.findByText("Old Session Night");
+
+    fireEvent.click(screen.getByText("login-session", { selector: "button" }));
+    await waitForGone("Old Session Night");
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+    resolveNewSession({ items: [bookingFor("New Session Night", "new-session")], total: 1 });
+    await screen.findByText("New Session Night");
+    expect(screen.queryByText("Old Session Night")).toBeNull();
   });
 });
 
@@ -306,7 +403,7 @@ describe("booking cancellation confirmation", () => {
     expect(apiMock.myBookings).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps same-page bookings visible while cancellation refreshes", async () => {
+  it("removes the cancelled booking while refreshing the current page", async () => {
     await renderBookingsForCancellation();
     let resolveRefresh!: (body: { items: typeof BOOKING[]; total: number }) => void;
     apiMock.myBookings.mockImplementationOnce(
@@ -317,8 +414,8 @@ describe("booking cancellation confirmation", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
 
     await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
-    expect((await screen.findByRole("status")).textContent).toMatch(/updating bookings/i);
-    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    expect((await screen.findByRole("status")).textContent).toMatch(/loading bookings/i);
+    expect(screen.queryByText("Lockable Night")).toBeNull();
     resolveRefresh({ items: [], total: 0 });
     await screen.findByText(/no bookings yet/i);
     expect(screen.queryByText("Lockable Night")).toBeNull();

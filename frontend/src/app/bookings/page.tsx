@@ -7,6 +7,8 @@ import { useAuth } from "../../lib/auth";
 import { hasStarted, useNow } from "../../lib/clock";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
 import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
+import { cacheOwnBookings, getCachedOwnBookings, invalidateOwnBookings } from "../../lib/own_bookings_cache";
+import { invalidatePublicEventLists } from "../../lib/event_list_navigation";
 
 const PAGE_SIZE = 10;
 
@@ -24,7 +26,7 @@ function cancelMessage(code: string, fallback: string): string {
 }
 
 export default function BookingsPage() {
-  const { user, ready, getToken, markSessionExpired, error: authError, clearError } = useAuth();
+  const { user, ready, getToken, markSessionExpired, error: authError, clearError, sessionIdentity } = useAuth();
   const now = useNow();
   const userId = user?.id ?? null;
   const isAdmin = user?.role === "admin";
@@ -55,7 +57,7 @@ export default function BookingsPage() {
     setLoadedFor(null);
     setPendingId(null);
     setPage(1);
-  }, [userId]);
+  }, [sessionIdentity]);
 
   useEffect(() => {
     const dialog = confirmationDialog.current;
@@ -71,7 +73,8 @@ export default function BookingsPage() {
   const load = useCallback(
     async (keepFailure = false) => {
       const token = getToken();
-      if (token === null) {
+      const identity = sessionIdentity;
+      if (token === null || identity === null) {
         // Signed out (or just signed out): never render another user's rows,
         // including late responses from pre-sign-out requests.
         requestId.current += 1;
@@ -82,26 +85,32 @@ export default function BookingsPage() {
         return;
       }
       const id = ++requestId.current;
-      const owner = userId;
-      const key = JSON.stringify([owner, page]);
+      const key = JSON.stringify([identity, page]);
+      const cached = getCachedOwnBookings(identity, page);
+      if (cached !== null) {
+        setItems(cached.items);
+        setTotal(cached.total);
+        setLoadedFor(key);
+      }
       setState("pending");
       setFailureKey(null);
       if (!keepFailure) setFailure(null);
       try {
         const body = await api.myBookings(token, page, PAGE_SIZE);
-        if (requestId.current !== id || getToken() !== token) return;
+        if (requestId.current !== id || getToken() !== token || sessionIdentity !== identity) return;
         if (body.items.length === 0 && body.total > 0 && page > 1) {
           // The current page emptied under us (e.g. a cancellation on the
           // last page): step back instead of stranding the viewer.
           setPage(page - 1);
           return;
         }
+        cacheOwnBookings(identity, page, body);
         setItems(body.items);
         setTotal(body.total);
-        setLoadedFor(JSON.stringify([owner, page]));
+        setLoadedFor(key);
         setState(body.items.length === 0 ? "empty" : "ready");
       } catch (err: unknown) {
-        if (requestId.current !== id || getToken() !== token) return;
+        if (requestId.current !== id || getToken() !== token || sessionIdentity !== identity) return;
         if (err instanceof ApiRequestError && err.status === 401) {
           markSessionExpired();
           setItems([]);
@@ -114,7 +123,7 @@ export default function BookingsPage() {
         setFailureKey(key);
       }
     },
-    [getToken, markSessionExpired, page, userId],
+    [getToken, markSessionExpired, page, sessionIdentity],
   );
 
   useEffect(() => {
@@ -147,6 +156,11 @@ export default function BookingsPage() {
     try {
       await api.cancelBooking(booking.id, token);
       invalidatePublicEventDetail(booking.event.id);
+      invalidatePublicEventLists();
+      if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
+      setItems([]);
+      setTotal(0);
+      setLoadedFor(null);
       // The account may have switched mid-flight: only the current
       // account's screen may refresh or show feedback. The new account's
       // own load (triggered by the switch) already covers its rows.
@@ -178,10 +192,12 @@ export default function BookingsPage() {
     }
   }
 
-  const currentKey = userId === null ? null : JSON.stringify([userId, page]);
-  const hasCurrentBookings = currentKey !== null && loadedFor === currentKey;
-  const visible = hasCurrentBookings ? items : [];
-  const visibleTotal = hasCurrentBookings ? total : 0;
+  const currentKey = sessionIdentity === null ? null : JSON.stringify([sessionIdentity, page]);
+  const cachedBookings = sessionIdentity === null ? null : getCachedOwnBookings(sessionIdentity, page);
+  const hasLoadedCurrentBookings = currentKey !== null && loadedFor === currentKey;
+  const hasCurrentBookings = hasLoadedCurrentBookings || cachedBookings !== null;
+  const visible = hasLoadedCurrentBookings ? items : cachedBookings?.items ?? [];
+  const visibleTotal = hasLoadedCurrentBookings ? total : cachedBookings?.total ?? 0;
   const pages = Math.max(1, Math.ceil(visibleTotal / PAGE_SIZE));
   const confirmationStarted =
     confirmation !== null && hasStarted(confirmation.booking.event.starts_at, now);

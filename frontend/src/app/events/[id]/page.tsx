@@ -8,7 +8,8 @@ import { useAuth } from "../../../lib/auth";
 import { NEPAL_LABEL, formatNepal } from "../../../lib/datetime";
 import { hasStarted, useNow } from "../../../lib/clock";
 import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../../lib/public_event_cache";
-import { getEventListOriginForEvent } from "../../../lib/event_list_navigation";
+import { getEventListOriginForEvent, invalidatePublicEventLists } from "../../../lib/event_list_navigation";
+import { invalidateOwnBookings } from "../../../lib/own_bookings_cache";
 
 type BookingPhase =
   | { kind: "idle" }
@@ -109,7 +110,7 @@ function Detail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const router = useRouter();
-  const { user, ready, getToken, markSessionExpired } = useAuth();
+  const { user, ready, getToken, markSessionExpired, sessionIdentity } = useAuth();
   const now = useNow();
   const [event, setEvent] = useState<EventDetail | null>(() => getCachedPublicEventDetail(id));
   const [loadedEventId, setLoadedEventId] = useState<string | null>(() => event === null ? null : id);
@@ -211,6 +212,8 @@ function Detail() {
     try {
       await api.createBooking(event.id, token);
       invalidatePublicEventDetail(event.id);
+      invalidatePublicEventLists();
+      if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
       // A switch or sign-out while the POST was in flight owns the screen
       // now: the old session's outcome must not touch the new one.
       if (getToken() !== token) return;
@@ -219,6 +222,8 @@ function Detail() {
       await load();
     } catch (err: unknown) {
       invalidatePublicEventDetail(event.id);
+      invalidatePublicEventLists();
+      if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
       if (getToken() !== token) return;
       if (err instanceof ApiRequestError && err.status === 401) {
         markSessionExpired();

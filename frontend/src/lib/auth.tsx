@@ -7,12 +7,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import { ApiRequestError, api, type User } from "./api";
 import { dropToken, readToken, writeToken } from "./token_store";
+import { clearOwnBookingsCache } from "./own_bookings_cache";
 
 interface AuthState {
   user: User | null;
   ready: boolean;
   expired: boolean;
   error: string | null;
+  sessionIdentity: string | null;
   login(email: string, password: string): Promise<User>;
   register(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
@@ -46,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionIdentity, setSessionIdentity] = useState<string | null>(null);
   // Monotonic generation for auth operations. Every login, logout, or
   // expiry starts a new generation and invalidates the continuations of
   // earlier ones, so a slow restoration or logout for a previous account
@@ -54,6 +57,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearSession = useCallback(() => {
     dropToken();
+    clearOwnBookingsCache();
+    setSessionIdentity(null);
     setUser(null);
   }, []);
 
@@ -72,6 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .me(stored)
       .then((me) => {
         if (cancelled || generation.current !== attempt) return;
+        clearOwnBookingsCache();
+        setSessionIdentity(globalThis.crypto.randomUUID());
         setUser(me);
       })
       .catch((err: unknown) => {
@@ -103,6 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const result = await api.login(email, password);
         if (generation.current !== attempt) return result.user;
         const persistence = writeToken(result.access_token);
+        clearOwnBookingsCache();
+        setSessionIdentity(globalThis.crypto.randomUUID());
         setUser(result.user);
         // A successful current login finalizes authentication readiness on
         // its own. A still-pending restoration for an older session must
@@ -142,6 +151,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // when sessionStorage itself is broken, so the server session can
     // still be revoked instead of orphaned.
     const stored = readToken();
+    clearSession();
+    setExpired(false);
     try {
       if (stored) await api.logout(stored);
     } catch {
@@ -169,8 +180,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const getToken = useCallback(() => readToken(), []);
 
   const value = useMemo<AuthState>(
-    () => ({ user, ready, expired, error, login, register, logout, markSessionExpired, clearError, getToken }),
-    [user, ready, expired, error, login, register, logout, markSessionExpired, clearError, getToken],
+    () => ({ user, ready, expired, error, sessionIdentity, login, register, logout, markSessionExpired, clearError, getToken }),
+    [user, ready, expired, error, sessionIdentity, login, register, logout, markSessionExpired, clearError, getToken],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

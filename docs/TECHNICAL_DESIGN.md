@@ -181,6 +181,21 @@ booking disabled until the current response confirms seats and start-time
 eligibility. Booking, cancellation, admin edit, and deletion invalidate the
 affected detail entry. The cache contains no session or booking-ownership data.
 
+The public event list also uses a memory-only LRU cache keyed by exact search
+query and page (eight entries, 30-minute expiry). Cache hits render immediately
+while a fresh list request runs; the backend response remains authoritative.
+The one short-lived list-origin snapshot is the same cache entry, not a second
+copy, and remains pinned while its origin is active. Booking, cancellation,
+admin event creation/edit/deletion clear public list entries.
+
+The bookings page uses a separate memory-only LRU cache (eight entries, 60-second
+expiry) keyed by an ephemeral identity for the current authenticated session and
+page. It contains only that session's own booking collection and is not
+populated until the user visits the page. Logout, session expiry, and every
+successful login/session restoration clear the cache synchronously; booking and
+cancellation invalidate the active session's entries. Cached rows render while
+refreshing, but do not replace backend authorization or mutation checks.
+
 When opening detail from the public list, keep one short-lived same-tab origin
 containing only the list URL, event ID, scroll position, and bounded public
 page snapshot. Accept only a same-origin public-list path. “Back to events”
