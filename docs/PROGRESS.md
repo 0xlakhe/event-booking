@@ -3118,4 +3118,9 @@ Limitations:
   public lists; the backend remains authoritative for every mutation.
 - Sign-out does not clear admin cache entries (documented); entries hold only
   admin-visible rows and expire within the freshness window.
-- Deployed-site rollout verification follows in a separate docs commit.
+- Deployed-site rollout verified read-only: push `83dc031`; the stable domain's
+  HTML etag changed from `f084e4d3b57c6fc784ef8e646d538157` (baseline) to
+  `46977dc330f353cb23659f8c1c097d00` about 45 seconds later, and post-rollout
+  checks returned HTTP 200 for `/`, `/health`, and
+  `/api/events?page=1&page_size=1`. No authenticated production requests were
+  made for this verification.
