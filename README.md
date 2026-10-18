@@ -2,26 +2,39 @@
 
 EventBook is a small full-stack event booking application: admins publish events with fixed
 capacity, visitors browse and search upcoming events, and registered users book or cancel a
-single seat per event. Seats are never overbooked.
+single seat per event. Simultaneous bookings for the last seat are made safe with a database
+row-lock protocol — seats are never overbooked.
 
-**Live app:** https://event-booking-chi-seven.vercel.app — the API is served same-origin under
+**Live app:** <https://event-booking-chi-seven.vercel.app> — the API is served same-origin under
 `/api`, and readiness is reported at `/health`.
 
-**Stack:** Next.js 15 (App Router) + TypeScript · FastAPI + PostgreSQL · Docker Compose locally ·
+**Docs:** [requirements](docs/REQUIREMENTS.md) · [technical design](docs/TECHNICAL_DESIGN.md) ·
+[implementation plan](docs/IMPLEMENTATION_PLAN.md) · [progress and evidence log](docs/PROGRESS.md)
+
+**Stack:** Next.js 15 · FastAPI · PostgreSQL · Docker Compose locally ·
 one Vercel project with two Services and Supabase PostgreSQL in production.
 
-Requirements, design, plan, and the evidence log live in
-[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md),
-[docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md),
-[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), and
-[docs/PROGRESS.md](docs/PROGRESS.md).
+## Table of contents
+
+- [Live demo](#live-demo)
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Tests](#tests)
+- [API](#api)
+- [How it works](#how-it-works)
+- [Project structure](#project-structure)
+- [Deployment](#deployment)
+- [Known issues and next steps](#known-issues-and-next-steps)
+- [How this was built](#how-this-was-built-ai-disclosure)
 
 ## Live demo
 
 - **Admin:** `admin@admin.com` · **User:** `user@example.com`. Passwords are provided with the
   submission. Registering a new account works too.
-- Try: browse and search the events list, open an event, book and cancel a seat from
-  "My bookings", then log in as the admin to create, edit, or delete an event (started events are
+- **Suggested tour:** browse and search the events list → open an event → book a seat → cancel it
+  from "My bookings" → log in as the admin → create, edit, or delete an event (started events are
   read-only).
 - Live demo data can drift while people test — bookings and admin edits are real. The seed state
   and every verification detail are recorded in [docs/PROGRESS.md](docs/PROGRESS.md).
@@ -43,7 +56,7 @@ Requirements, design, plan, and the evidence log live in
   after a booking); bounded 30-second in-memory caches; stale-response, lost-response, and
   account-switch guards; accessible loading, error, and empty states.
 
-## Stack and versions
+## Tech stack
 
 | Layer | Technology |
 | --- | --- |
@@ -59,20 +72,10 @@ selected and is therefore part of the required scope. Authentication is a small 
 opaque-session implementation so that roles, expiry, and revocation stay in the application
 schema instead of a third-party identity provider.
 
-## Repository layout
+## Quick start
 
-```
-frontend/    Next.js app: app/ routes, components/, lib/ (typed API client, auth, caches)
-backend/     FastAPI app: app/ modules, migrations/ (Alembic), tests/ (pytest)
-docs/        requirements, technical design, implementation plan, progress log, project brief
-compose.yaml local db + backend + frontend services, plus the tools profile
-vercel.json  production contract: two Services and the /api/* + /health rewrites
-.env.example configuration template for local development (no real secrets)
-```
-
-## Local development
-
-Requires Docker Desktop with Compose v2; everything else runs in containers.
+Prerequisite: Docker Desktop with Compose v2. Everything else runs in containers, so no local
+Node.js or Python installation is needed.
 
 ```sh
 cp .env.example .env        # replace placeholder passwords locally; never commit .env
@@ -95,69 +98,6 @@ open http://localhost:3000/
 - Data persists in the `postgres_data` volume across `docker compose down`;
   `docker compose down --volumes` is a deliberate destructive reset.
 
-## Tests
-
-```sh
-# Backend: isolated test database (eventbook_test); the suite refuses non-test targets.
-docker compose --profile tools run --rm tools pytest -q        # 123 passed
-
-# Frontend
-cd frontend
-npm test          # 153 tests (Vitest + Testing Library)
-npm run typecheck # tsc --noEmit
-```
-
-- Backend tests run against real PostgreSQL, so constraints, grants, row locks, and concurrency
-  behavior are exercised for real rather than through fakes. The bonus race proofs live in
-  `backend/tests/test_concurrency.py`: two barrier-fired bookings contend for one remaining seat
-  (exactly one 201 and one `EVENT_FULL`, active count stays equal to capacity), and a capacity edit
-  racing a booking serializes on the same event row lock so `active <= capacity` always holds.
-- Frontend tests cover the typed API client, auth hydration, list/detail/admin/bookings flows,
-  and the cache and navigation regressions.
-
-## HTTP API
-
-| Area | Endpoints |
-| --- | --- |
-| Public events | `GET /api/events?q=&page=&page_size=` (upcoming only, literal title search, paginated) · `GET /api/events/{id}` (detail, works for past events too) |
-| Auth | `POST /api/auth/register` · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` |
-| Bookings (signed-in users) | `POST /api/events/{id}/bookings` · `GET /api/bookings/me` · `DELETE /api/bookings/{id}` |
-| Admin (`admin` role) | `GET /api/admin/events` · `POST /api/admin/events` · `PATCH /api/admin/events/{id}` · `DELETE /api/admin/events/{id}` · `GET /api/admin/events/{id}/attendees` |
-| Operations | `GET /health` and `GET /api/health` — sanitized readiness; `ok` only when the database is reachable and at the expected Alembic revision |
-
-Rules enforced at the API: admins cannot book (`ADMIN_BOOKING_FORBIDDEN`) and manage events
-instead; user tokens cannot use admin routes; booking a full, already-booked, or started event is
-rejected (`EVENT_FULL`, `ALREADY_BOOKED`, `EVENT_STARTED`); repeated failed logins return
-`429 TOO_MANY_ATTEMPTS` with `Retry-After`; errors are sanitized to stable machine-readable codes
-without internal detail.
-
-## Data model
-
-All tables live in the private `eventbook` schema:
-
-- **`users`** — uuid primary key, unique normalized email, Argon2id hash, `role` defaulting to
-  `user`, with no runtime path that can set `admin`.
-- **`sessions`** — user FK (cascade), unique SHA-256 token hash, expiry timestamp.
-- **`events`** — nonempty title/description/venue, `total_seats > 0`, UTC start time.
-- **`bookings`** — one active booking per (user, event) enforced by a partial unique index; user
-  FK restrict, event FK cascade.
-
-`seats_left` is computed per request and never stored. The Alembic version row lives in
-`eventbook.alembic_version`; the runtime role can only read it.
-
-Trade-offs:
-
-- **Capacity** — writers serialize on the event row lock and count active bookings after acquiring
-  it (no stored counter); eligibility and start-time are judged with fresh database time after the
-  lock, never request-arrival time. Guests and admins share the same lock-first protocol.
-- **Deletion** — an event with any active booking cannot be deleted (`EVENT_HAS_BOOKINGS`), and
-  started events are read-only (`EVENT_STARTED`), so booking history is preserved rather than
-  silently rewritten.
-- **Time** — stored in UTC; admin input requires an explicit offset; the UI presents Nepal time
-  (UTC+05:45).
-- **Auth storage** — tokens travel in an `Authorization: Bearer` header only and are kept in
-  `sessionStorage`; the frontend never talks to the database and holds no Supabase client.
-
 ## Configuration
 
 [.env.example](.env.example) documents every variable. The important ones:
@@ -175,6 +115,88 @@ Trade-offs:
 
 Only `NEXT_PUBLIC_*` values reach the browser bundle, so nothing secret has a path into the
 frontend. Real `.env` files are gitignored; never commit them.
+
+## Tests
+
+```sh
+# Backend: isolated test database (eventbook_test); the suite refuses non-test targets.
+docker compose --profile tools run --rm tools pytest -q        # 123 passed
+
+# Frontend
+cd frontend
+npm test          # 153 tests, 13 files (Vitest + Testing Library)
+npm run typecheck # tsc --noEmit
+```
+
+- Backend tests run against real PostgreSQL, so constraints, grants, row locks, and concurrency
+  behavior are exercised for real rather than through fakes. The bonus race proofs live in
+  `backend/tests/test_concurrency.py`: two barrier-fired bookings contend for one remaining seat
+  (exactly one 201 and one `EVENT_FULL`, active count stays equal to capacity), and a capacity edit
+  racing a booking serializes on the same event row lock so `active <= capacity` always holds.
+- Frontend tests cover the typed API client, auth hydration, list/detail/admin/bookings flows,
+  and the cache and navigation regressions.
+
+## API
+
+| Area | Endpoints |
+| --- | --- |
+| Public events | `GET /api/events?q=&page=&page_size=` (upcoming only, literal title search, paginated) · `GET /api/events/{id}` (detail, works for past events too) |
+| Auth | `POST /api/auth/register` · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/me` |
+| Bookings (signed-in users) | `POST /api/events/{id}/bookings` · `GET /api/bookings/me` · `DELETE /api/bookings/{id}` |
+| Admin (`admin` role) | `GET /api/admin/events` · `POST /api/admin/events` · `PATCH /api/admin/events/{id}` · `DELETE /api/admin/events/{id}` · `GET /api/admin/events/{id}/attendees` |
+| Operations | `GET /health` and `GET /api/health` — sanitized readiness; `ok` only when the database is reachable and at the expected Alembic revision |
+
+Rules enforced at the API: admins cannot book (`ADMIN_BOOKING_FORBIDDEN`) and manage events
+instead; user tokens cannot use admin routes; booking a full, already-booked, or started event is
+rejected (`EVENT_FULL`, `ALREADY_BOOKED`, `EVENT_STARTED`); repeated failed logins return
+`429 TOO_MANY_ATTEMPTS` with `Retry-After`; errors are sanitized to stable machine-readable codes
+without internal detail.
+
+## How it works
+
+All tables live in the private `eventbook` schema:
+
+- **`users`** — uuid primary key, unique normalized email, Argon2id hash, `role` defaulting to
+  `user`, with no runtime path that can set `admin`.
+- **`sessions`** — user FK (cascade), unique SHA-256 token hash, expiry timestamp.
+- **`events`** — nonempty title/description/venue, `total_seats > 0`, UTC start time.
+- **`bookings`** — one active booking per (user, event) enforced by a partial unique index; user
+  FK restrict, event FK cascade.
+
+`seats_left` is computed per request and never stored. The Alembic version row lives in
+`eventbook.alembic_version`; the runtime role can only read it.
+
+Key design decisions:
+
+- **Capacity and the last seat** — there is no stored counter. A booking locks the event row
+  (`SELECT … FOR UPDATE`), then counts active bookings in a separate statement, rejects with
+  `EVENT_FULL` when the count has reached capacity, and inserts; commits are serialized by the
+  lock, so a simultaneous second booker acquires the lock only after the first commit and sees the
+  new count. Eligibility and start times are judged with fresh database time after the lock —
+  never request-arrival time — and lock/statement timeouts roll back and surface as retryable
+  `503`s. Guests and admins share the same lock-first protocol.
+- **Deletion** — an event with any active booking cannot be deleted (`EVENT_HAS_BOOKINGS`), and
+  started events are read-only (`EVENT_STARTED`), so booking history is preserved rather than
+  silently rewritten.
+- **Time** — stored in UTC; admin input requires an explicit offset; the UI presents Nepal time
+  (UTC+05:45).
+- **Auth storage** — tokens travel in an `Authorization: Bearer` header only and are kept in
+  `sessionStorage`; the frontend never talks to the database and holds no Supabase client.
+
+See [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) for the full contract behind these
+choices.
+
+## Project structure
+
+```
+frontend/    Next.js app: app/ routes, components/, lib/ (typed API client, auth, caches)
+backend/     FastAPI app: app/ modules, migrations/ (Alembic), tests/ (pytest)
+docs/        project brief, requirements, technical design, implementation plan, progress log
+compose.yaml local db + backend + frontend services, plus the tools profile
+vercel.json  production contract: two Services and the /api/* + /health rewrites
+.env.example configuration template for local development (no real secrets)
+AGENTS.md    engineering rules used while building: readability, verification, review
+```
 
 ## Deployment (Vercel + Supabase)
 
@@ -235,15 +257,6 @@ Verified after provisioning: Supabase's `anon`, `authenticated`, and `service_ro
 `eventbook` usage.
 </details>
 
-## How this was built (AI disclosure)
-
-The project was developed by the human developer working with AI coding agents (OpenCode) acting
-as the implementation agent, while the human owned product choices, reviews, and acceptance. Each
-milestone was checked by an independent reviewer agent before being recorded complete; the git
-history shows the increments, and [docs/PROGRESS.md](docs/PROGRESS.md) records the exact commands,
-results, corrections, and limitations — distinguishing independently verified evidence from
-builder-reported results.
-
 ## Known issues and next steps
 
 - The optional brief bonuses are implemented: the simultaneous-last-seat race proof and a
@@ -255,3 +268,12 @@ builder-reported results.
   fresh demo (the hosted dataset also drifts as people test).
 - Operational surface is intentionally small: sanitized errors and the `/health` readiness
   endpoint; there is no third-party error monitoring.
+
+## How this was built (AI disclosure)
+
+The project was developed by the human developer working with AI coding agents (OpenCode) acting
+as the implementation agent, while the human owned product choices, reviews, and acceptance. Each
+milestone was checked by an independent reviewer agent before being recorded complete; the git
+history shows the increments, and [docs/PROGRESS.md](docs/PROGRESS.md) records the exact commands,
+results, corrections, and limitations — distinguishing independently verified evidence from
+builder-reported results.

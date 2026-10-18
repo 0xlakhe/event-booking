@@ -3242,3 +3242,28 @@ run ~5 seconds) — the first live confirmation that the new backend behavior is
 deployed. Failed logins write no database rows and the limiter state is
 in-memory, so no production data was mutated; no authenticated production
 requests were made.
+
+## README restructure (2026-10-18, NPT)
+
+User request: update the README so it reads like a standard project README.
+
+Changed:
+- `README.md`: added a table of contents; canonical section order (live demo →
+  features → tech stack → quick start → configuration → tests → API → how it
+  works → project structure → deployment → known issues → AI disclosure);
+  retitled "Local development" to "Quick start" with the Docker Desktop
+  prerequisite stated up front; merged "Data model" and "Trade-offs" into
+  "How it works" with a clearer last-seat row-lock explanation; moved the AI
+  disclosure after known issues; added `AGENTS.md` to the project-structure
+  listing. Every factual claim was kept and re-verified rather than rewritten.
+
+Verified before committing (claims made in the rewritten README):
+- Backend suite: 123 passed (same session as the bonus work).
+- Frontend suite re-run today:
+  `docker compose exec -T frontend npm test -- --run` → 153 passed (13 files).
+- `frontend/package.json` scripts (`test` → `vitest run`, `typecheck` →
+  `tsc --noEmit`) and the repository layout match what the README states; no
+  LICENSE file exists, so no license section is claimed.
+- The quick-start commands are unchanged from the previously verified set.
+
+Docs-only change: no code, tests, or configuration were touched.
