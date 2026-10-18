@@ -174,41 +174,51 @@ rendered until the current event is available.
 To reduce common-navigation latency without an unbounded data layer, list
 event links prefetch public detail only on hover, keyboard focus, or touch
 intent. Public detail responses are deduplicated and held in a memory-only LRU
-cache (20 entries, 90-second expiry) with at most three concurrent intent
-prefetches. The detail route may render cached descriptive content immediately,
-but always requests fresh detail; it marks availability as updating and keeps
-booking disabled until the current response confirms seats and start-time
-eligibility. Booking, cancellation, admin edit, and deletion invalidate the
-affected detail entry. The cache contains no session or booking-ownership data.
+cache (20 entries, 30-second expiry) with at most three concurrent intent
+prefetches. A completed fresh cache hit is immediately ready and makes no
+second detail request; an unfinished prefetch is not a cache hit. Expired or
+invalidated entries are fetched before booking is enabled. Booking,
+cancellation, admin edit, and deletion invalidate the affected detail entry.
+The cache contains no session or booking-ownership data.
 
 The public event list also uses a memory-only LRU cache keyed by exact search
-query and page (eight entries, 30-minute expiry). Cache hits render immediately
-while a fresh list request runs; the backend response remains authoritative.
-The one short-lived list-origin snapshot is the same cache entry, not a second
-copy, and remains pinned while its origin is active. Booking, cancellation,
-admin event creation/edit/deletion clear public list entries.
+query and page (eight entries, 30-second expiry). Fresh hits are immediately
+ready without revalidation; expired or invalidated entries are not shown as
+fresh. The one short-lived list-origin snapshot is the same cache entry, not a
+second copy, and remains pinned while its origin is active. A confirmed booking
+corrects the booked event's row in every cached list that shows it (one fewer
+seat, never below zero) without extending that row's freshness window, so the
+returning list stays instant with truthful availability. Rejected or uncertain
+booking outcomes, cancellation, and admin event creation/edit/deletion clear
+public list entries. The backend remains authoritative for capacity and
+mutation decisions.
 
-The bookings page uses a separate memory-only LRU cache (eight entries, 60-second
-expiry) keyed by an ephemeral identity for the current authenticated session and
-page. It contains only that session's own booking collection and is not
-populated until the user visits the page. Logout, session expiry, and every
-successful login/session restoration clear the cache synchronously; booking and
-cancellation invalidate the active session's entries. Cached rows render while
-refreshing, but do not replace backend authorization or mutation checks.
+The bookings page uses a separate memory-only LRU cache (eight entries,
+30-second expiry) keyed by an ephemeral identity for the current authenticated
+session and page. A bounded 32-entry per-session event-membership cache with the
+same TTL lets a fresh detail route show the booked marker without scanning
+history. Positive membership also populates from cached own-bookings pages; a
+complete history scan may cache either outcome. Logout, session expiry, and
+every successful login/session restoration clear private caches synchronously.
+Booking/cancellation invalidate the active session's private entries, and
+revision checks prevent older in-flight responses from repopulating them.
+Tokens are never cached. These caches do not replace backend authorization or
+mutation checks.
 
 When opening detail from the public list, keep one short-lived same-tab origin
 containing only the list URL, event ID, scroll position, and bounded public
 page snapshot. Accept only a same-origin public-list path. “Back to events”
 uses browser history only for a matching list origin and otherwise falls back
 to `/`; browser Back/Forward retains the normal history URL. On matching
-return, use the snapshot only as explicitly refreshing public content, then
-restore scroll in a layout-phase effect after the snapshot DOM is committed and
-layout is forced, before the browser can paint the list at the top. The normal
-list request proceeds immediately; if the origin expired or no longer matches,
-do not restore or reveal its snapshot. Consume the exact origin after restoring
-so a later same-URL visit cannot replay stale rows or override intentional
-scrolling. A failed refresh does not present snapshot availability as current.
-Do not globally suppress route scrolling.
+return, reuse the exact list cache entry only while fresh, then restore scroll
+in a layout-phase effect after the rows are committed and layout is forced. If
+the entry expired or was invalidated, fetch without showing stale rows and
+restore the matching origin's scroll after the new rows arrive. Origin metadata
+has a separate short lifetime and never re-inserts an expired or invalidated
+snapshot. If the origin expires or no longer matches, do not restore its scroll.
+Consume the exact origin after restoring so a later same-URL visit cannot replay
+rows or override intentional scrolling. A failed fetch does not present stale
+availability as current. Do not globally suppress route scrolling.
 
 When a visitor activates a public-list event link with an ordinary same-tab
 click, keep the list rendered while the public detail request resolves. Show a
@@ -218,18 +228,16 @@ request succeeds. A failed request leaves a visible retry action on the list;
 a changed query/page or unmount makes its response inert. Modified clicks,
 downloads, and non-self targets retain native anchor behavior. A ready bounded
 public-detail cache entry may navigate immediately; the detail route renders
-that public description on its initial render but still treats availability as
-updating and obtains its own fresh response before enabling booking. Direct
-detail URLs retain the ordinary loading skeleton and retryable error state.
-While cached content refreshes, report pending availability in the existing
-availability row rather than inserting a banner above the detail grid; keep
-the booking action disabled until the fresh response succeeds.
+that completed fresh entry ready on its initial render and makes no second
+detail request. Direct cold detail URLs retain the ordinary loading skeleton
+and retryable error state. Expired/invalidated detail entries are fetched before
+booking is enabled.
 
 Store and compare instants in UTC. The event becomes ineligible when `starts_at <= database clock`. Reject timezone-naive API input. For the small app, present all dates and the admin form in **Nepal time**, visibly labeled `Asia/Kathmandu (UTC+05:45)`; convert the admin's local form value to an explicit `+05:45` timestamp before sending. Avoid interpreting `datetime-local` using the evaluator's device timezone. Return UTC, format explicitly in Nepal time, and use backend responses as the final authority.
 
 Proposed pages: upcoming events `/`, detail `/events/[id]`, `/register`, `/login`, `/bookings`, and `/admin` with event forms and attendee display. A simple responsive layout and small reusable forms suffice. Include all states required in `REQUIREMENTS.md`. Preserve search/page in URL parameters, reset page when search changes, and discard stale search responses. Route guards improve UX; backend permission checks remain decisive. Admins land on `/admin` after login, see no public Events navigation, and are redirected from public list/detail pages to management only after session restoration confirms their role. Upcoming and started admin cards show descriptions inline, with a three-line preview and accessible Read more/Read less controls only when the text overflows. Descriptions arrive in the paginated admin collection query, not per-card requests. Metadata appears once; there is no separate Details action or started-event notice. The admin list adds an Upcoming/Past/All time filter (Upcoming default) whose selection lives in a `time_filter` URL parameter so refresh and browser navigation preserve it; changing filters keeps the title search and resets to page one. Attendees stay reachable, and started events have no edit/delete controls; backend conflict messages still explain rejected mutations. The admin page carries no public-browsing link (no Back to events), since administration is a management-only flow; Logout comes from the shared navigation, and logging out from an admin route (`/admin` or `/admin/*`) returns the visitor to the public list `/` rather than leaving them on the admin "log in as an admin" prompt. Local state clears even when revocation fails, and the revocation warning stays visible on the destination page because it lives in shared auth state. These presentation choices are user-selected, not PDF mandates.
 
-On booking/cancellation/edit, disable duplicate submission while pending and refetch affected availability/bookings after success or capacity conflict. Do not optimistically claim a seat before commit. Own-booking pages show current bookings only; cancellation removes the row from history after refetch, with no cancelled-status item. Disable ineligible actions with an explanation. The frontend gates booking and cancellation on the event start time (`starts_at <= now`), updating on a lightweight interval so eligibility changes while the page stays open without a reload; the backend clock remains authoritative and still rejects started-event mutations. After a booking response is lost, the client never auto-retries: it scans the actor's entire booking history (there is no narrower per-event lookup endpoint) before reporting a definite absence, and reports an uncertain outcome when that verification itself fails. The detail page reuses that scan on load — for signed-in users only — to derive the action label: a current booking for the event yields a disabled Booked, which outranks the full and started labels and suppresses the started note. The check only ever sets the marker, is guarded by a per-scan generation and the session token so a stale response from a previous event, account, or sign-out cannot mark the current screen, and failures leave the action available, with an ALREADY_BOOKED response as the repair path. A scan 401 is deliberately not an app-wide session-expiry trigger; the next authenticated action remains responsible for that. Authenticated responses use `Cache-Control: no-store`; avoid static caching of availability and private data. Clear private frontend state when auth changes.
+On booking/cancellation/edit, disable duplicate submission while pending and refetch affected availability/bookings after success or capacity conflict. Do not optimistically claim a seat before commit. Own-booking pages show current bookings only; cancellation removes the row from history after refetch, with no cancelled-status item. Disable ineligible actions with an explanation. The frontend gates booking and cancellation on the event start time (`starts_at <= now`), updating on a lightweight interval so eligibility changes while the page stays open without a reload; the backend clock remains authoritative and still rejects started-event mutations. After a booking response is lost, the client never auto-retries: it scans the actor's entire booking history (there is no narrower per-event lookup endpoint) before reporting a definite absence, and reports an uncertain outcome when that verification itself fails. The detail page reuses a fresh session-scoped membership result or scans history on load — for signed-in users only — to derive the action label: a current booking for the event yields a disabled Booked, which outranks full and started labels and suppresses the started note. Scans are guarded by generation, session token/identity, and cache revision so stale responses cannot repopulate invalidated state. Failures leave the action available, with an ALREADY_BOOKED response as the repair path. A scan 401 is deliberately not an app-wide session-expiry trigger; the next authenticated action remains responsible for that. Authenticated responses use `Cache-Control: no-store`; avoid static caching of availability and private data. Clear private frontend state when auth changes.
 
 ## Seeds and tests
 

@@ -8,8 +8,13 @@ import { useAuth } from "../../../lib/auth";
 import { NEPAL_LABEL, formatNepal } from "../../../lib/datetime";
 import { hasStarted, useNow } from "../../../lib/clock";
 import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../../lib/public_event_cache";
-import { getEventListOriginForEvent, invalidatePublicEventLists } from "../../../lib/event_list_navigation";
-import { invalidateOwnBookings } from "../../../lib/own_bookings_cache";
+import { decrementCachedPublicListSeat, getEventListOriginForEvent, invalidatePublicEventLists } from "../../../lib/event_list_navigation";
+import {
+  cacheOwnBookingMembership,
+  getCachedOwnBookingMembership,
+  getOwnBookingsCacheRevision,
+  invalidateOwnBookings,
+} from "../../../lib/own_bookings_cache";
 
 type BookingPhase =
   | { kind: "idle" }
@@ -114,11 +119,13 @@ function Detail() {
   const now = useNow();
   const [event, setEvent] = useState<EventDetail | null>(() => getCachedPublicEventDetail(id));
   const [loadedEventId, setLoadedEventId] = useState<string | null>(() => event === null ? null : id);
-  const [state, setState] = useState<"pending" | "ready" | "error">("pending");
+  const [state, setState] = useState<"pending" | "ready" | "error">(() => event === null ? "pending" : "ready");
   const [failure, setFailure] = useState<string | null>(null);
   const [failureEventId, setFailureEventId] = useState<string | null>(null);
   const [phase, setPhase] = useState<BookingPhase>({ kind: "idle" });
-  const [booked, setBooked] = useState(false);
+  const [booked, setBooked] = useState(() =>
+    sessionIdentity !== null && getCachedOwnBookingMembership(sessionIdentity, id) === true,
+  );
   const requestId = useRef(0);
   const loadedEventIdRef = useRef<string | null>(loadedEventId);
   const bookingInFlight = useRef(false);
@@ -127,10 +134,14 @@ function Detail() {
   const load = useCallback(async () => {
     const current = ++requestId.current;
     const cached = getCachedPublicEventDetail(id);
-    if (cached !== null && loadedEventIdRef.current !== id) {
+    if (cached !== null) {
       setEvent(cached);
       setLoadedEventId(id);
       loadedEventIdRef.current = id;
+      setFailure(null);
+      setFailureEventId(null);
+      setState("ready");
+      return;
     }
     setState("pending");
     setFailure(null);
@@ -165,19 +176,30 @@ function Detail() {
    * state, so this check never blocks the explicit action. */
   const refreshBooked = useCallback(async () => {
     const token = getToken();
-    if (token === null) return;
+    const identity = sessionIdentity;
+    if (token === null || identity === null) return;
+    const cached = getCachedOwnBookingMembership(identity, id);
+    if (cached !== null) {
+      setBooked(cached);
+      return;
+    }
     const scan = ++scanId.current;
+    const cacheRevision = getOwnBookingsCacheRevision();
     try {
       const outcome = await findActiveBooking(token, id);
-      if (scanId.current !== scan || getToken() !== token) return;
-      if (outcome === "confirmed") setBooked(true);
+      if (
+        scanId.current !== scan || getToken() !== token || sessionIdentity !== identity ||
+        getOwnBookingsCacheRevision() !== cacheRevision
+      ) return;
+      cacheOwnBookingMembership(identity, id, outcome === "confirmed", cacheRevision);
+      setBooked(outcome === "confirmed");
     } catch {
       // Unknown: keep the action available rather than blocking on it. A
       // scan 401 deliberately does not trigger the app-wide expiry
       // redirect; the next authenticated action still expires the session
       // through the existing paths.
     }
-  }, [getToken, id]);
+  }, [getToken, id, sessionIdentity]);
 
   useEffect(() => {
     // Same restoration rule as the listing: admins manage in /admin and
@@ -198,7 +220,7 @@ function Detail() {
     setPhase({ kind: "idle" });
     bookingInFlight.current = false;
     setBooked(false);
-  }, [user?.id, id]);
+  }, [sessionIdentity, id]);
 
   async function book() {
     const token = getToken();
@@ -212,11 +234,17 @@ function Detail() {
     try {
       await api.createBooking(event.id, token);
       invalidatePublicEventDetail(event.id);
-      invalidatePublicEventLists();
+      // The only list-visible change is this event's remaining seats: correct
+      // the cached rows instead of clearing them, so going back keeps the
+      // list snapshot (and its remembered scroll position) with the seat the
+      // visitor just took. Other outcomes below stay invalidating: they can
+      // mean the cached capacity is wrong (full, duplicate, started).
+      decrementCachedPublicListSeat(event.id);
       if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
       // A switch or sign-out while the POST was in flight owns the screen
       // now: the old session's outcome must not touch the new one.
       if (getToken() !== token) return;
+      if (sessionIdentity !== null) cacheOwnBookingMembership(sessionIdentity, event.id, true);
       setBooked(true);
       setPhase({ kind: "idle" });
       await load();
@@ -233,7 +261,10 @@ function Detail() {
       if (err instanceof ApiRequestError) {
         // Backend decision (full/duplicate/started): authoritative, no retry.
         // A duplicate is also the repair signal for the load-time check.
-        if (err.code === "ALREADY_BOOKED") setBooked(true);
+        if (err.code === "ALREADY_BOOKED") {
+          setBooked(true);
+          if (sessionIdentity !== null) cacheOwnBookingMembership(sessionIdentity, event.id, true);
+        }
         setPhase({ kind: "failed", message: friendlyBookingError(err.code, err.message) });
         await load();
         return;
@@ -247,8 +278,13 @@ function Detail() {
         message: "The booking may have gone through. Checking your bookings…",
       });
       try {
+        const cacheRevision = getOwnBookingsCacheRevision();
         const outcome = await findActiveBooking(token, event.id);
-        if (getToken() !== token) return;
+        if (
+          getToken() !== token || sessionIdentity === null ||
+          getOwnBookingsCacheRevision() !== cacheRevision
+        ) return;
+        cacheOwnBookingMembership(sessionIdentity, event.id, outcome === "confirmed", cacheRevision);
         if (outcome === "confirmed") {
           setBooked(true);
           setPhase({ kind: "idle" });
@@ -261,7 +297,7 @@ function Detail() {
           await load();
         }
       } catch (recoveryErr: unknown) {
-        if (getToken() !== token) return;
+        if (getToken() !== token || sessionIdentity === null) return;
         if (recoveryErr instanceof ApiRequestError && recoveryErr.status === 401) {
           // The initiating session is still current, so its 401 is real.
           markSessionExpired();

@@ -8,11 +8,17 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EventDetail } from "../../../lib/api";
+import type { EventDetail, EventSummary } from "../../../lib/api";
 import { AuthProvider, useAuth } from "../../../lib/auth";
 import { resetTokenStoreForTests } from "../../../lib/token_store";
 import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../../lib/public_event_cache";
-import { clearEventListOrigin, rememberEventListOrigin } from "../../../lib/event_list_navigation";
+import {
+  cachePublicEventList,
+  clearEventListOrigin,
+  clearPublicEventListCache,
+  getCachedPublicEventList,
+  rememberEventListOrigin,
+} from "../../../lib/event_list_navigation";
 import DetailPage from "./page";
 
 const { routerMock, routeState } = vi.hoisted(() => ({
@@ -72,31 +78,26 @@ afterEach(() => {
   vi.useRealTimers();
   routeState.id = "event-1";
   clearEventListOrigin();
+  clearPublicEventListCache();
   sessionStorage.clear();
   resetTokenStoreForTests();
 });
 
 describe("event detail refresh context", () => {
-  it("keeps the cached detail layout stable while fresh availability loads", async () => {
+  it("uses a fresh completed detail without a second availability request", async () => {
     signIn();
     apiMock.getEvent.mockResolvedValueOnce(EVENT);
     await loadPublicEventDetail(EVENT.id);
-    let resolveRefresh!: (detail: EventDetail) => void;
-    apiMock.getEvent.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveRefresh = resolve)),
-    );
+    apiMock.getEvent.mockClear();
+    apiMock.myBookings.mockResolvedValue({ items: [], total: 0 });
 
     renderSignedIn();
 
     expect(await screen.findByText("Lockable Night")).not.toBeNull();
     expect(screen.queryByText("Updating event…")).toBeNull();
-    expect(screen.getByRole("status").textContent).toBe("Updating availability…");
-    expect(screen.getByRole("status").className).toBe("sr-only");
-    expect(screen.getByText("Updating availability…", { selector: "dd" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Checking availability…" }).hasAttribute("disabled")).toBe(true);
-    await waitFor(() => expect(apiMock.getEvent).toHaveBeenCalledTimes(2));
-    await act(async () => resolveRefresh({ ...EVENT, seats_left: 8 }));
-    await screen.findByText("8 / 10 seats left");
+    expect(screen.queryByText(/updating availability/i)).toBeNull();
+    expect(apiMock.getEvent).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Book one seat" })).not.toBeNull();
     invalidatePublicEventDetail(EVENT.id);
   });
 
@@ -206,6 +207,55 @@ describe("event detail refresh context", () => {
     expect(backLink.getAttribute("href")).toBe("/?q=ceramics&page=3");
     fireEvent.click(backLink);
     expect(routerMock.back).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("public list return after booking", () => {
+  const listed: EventSummary = {
+    id: EVENT.id,
+    title: EVENT.title,
+    starts_at: EVENT.starts_at,
+    venue: EVENT.venue,
+    total_seats: EVENT.total_seats,
+    seats_left: EVENT.seats_left,
+  };
+
+  it("keeps the returning list cached with the booked seat removed", async () => {
+    signIn();
+    apiMock.myBookings.mockResolvedValue({ items: [], total: 0 });
+    apiMock.createBooking.mockResolvedValue(undefined);
+    apiMock.getEvent.mockResolvedValue(EVENT);
+    cachePublicEventList("", 1, { items: [listed], total: 1 });
+
+    renderSignedIn();
+    await screen.findByText("Lockable Night");
+    fireEvent.click(await screen.findByRole("button", { name: "Book one seat" }));
+    await screen.findByRole("button", { name: "Booked" });
+
+    // The list the visitor returns to is corrected, not cleared: it keeps
+    // rendering (and restoring its remembered scroll) and now shows the seat
+    // this booking took.
+    expect(getCachedPublicEventList("", 1)?.items[0]?.seats_left).toBe(8);
+  });
+
+  it("clears the returning list when the booking is rejected", async () => {
+    const { ApiRequestError } = await import("../../../lib/api");
+    signIn();
+    apiMock.myBookings.mockResolvedValue({ items: [], total: 0 });
+    apiMock.createBooking.mockRejectedValueOnce(
+      new ApiRequestError(409, "EVENT_FULL", "This event just filled up."),
+    );
+    apiMock.getEvent.mockResolvedValue(EVENT);
+    cachePublicEventList("", 1, { items: [listed], total: 1 });
+
+    renderSignedIn();
+    await screen.findByText("Lockable Night");
+    fireEvent.click(await screen.findByRole("button", { name: "Book one seat" }));
+    await screen.findByText(/filled up/i);
+
+    // A rejected booking can mean the cached capacity is wrong (someone else
+    // took the last seat), so the returning list must refetch instead.
+    expect(getCachedPublicEventList("", 1)).toBeNull();
   });
 });
 

@@ -1,7 +1,7 @@
 import type { EventSummary } from "./api";
 
 const ORIGIN_TTL_MS = 30 * 60_000;
-const PUBLIC_LIST_CACHE_TTL_MS = ORIGIN_TTL_MS;
+const PUBLIC_LIST_CACHE_TTL_MS = 30_000;
 const PUBLIC_LIST_CACHE_LIMIT = 8;
 
 export type EventListSnapshot = { items: EventSummary[]; total: number };
@@ -16,6 +16,7 @@ export type EventListOrigin = {
 
 let origin: EventListOrigin | null = null;
 const publicListCache = new Map<string, { snapshot: EventListSnapshot; expiresAt: number }>();
+let publicListCacheRevision = 0;
 
 function listKey(query: string, page: number): string {
   return JSON.stringify([query, page]);
@@ -44,6 +45,16 @@ export function getCachedPublicEventList(query: string, page: number): EventList
 }
 
 export function cachePublicEventList(query: string, page: number, snapshot: EventListSnapshot) {
+  cachePublicEventListAtRevision(query, page, snapshot, publicListCacheRevision);
+}
+
+export function cachePublicEventListAtRevision(
+  query: string,
+  page: number,
+  snapshot: EventListSnapshot,
+  revision: number,
+): boolean {
+  if (revision !== publicListCacheRevision) return false;
   currentOrigin();
   const key = listKey(query, page);
   publicListCache.delete(key);
@@ -55,6 +66,11 @@ export function cachePublicEventList(query: string, page: number, snapshot: Even
     if (oldestKey === undefined) break;
     publicListCache.delete(oldestKey);
   }
+  return true;
+}
+
+export function getPublicEventListCacheRevision(): number {
+  return publicListCacheRevision;
 }
 
 export function getEventListSnapshotForOrigin(expected: EventListOrigin): EventListSnapshot | null {
@@ -68,7 +84,33 @@ export function getEventListSnapshotForOrigin(expected: EventListOrigin): EventL
 }
 
 export function invalidatePublicEventLists() {
+  publicListCacheRevision += 1;
   publicListCache.clear();
+}
+
+/** A confirmed booking changes one row of every cached public list: this
+ * event's remaining seats. Correct those rows in place instead of discarding
+ * the cache, so returning to the list stays instant and keeps the remembered
+ * scroll position while still showing truthful availability. The freshness
+ * window is not extended: a corrected row expires and refetches like any
+ * other cached result, and lists that do not show the event are untouched.
+ * The correction bumps the list revision so a response that started before
+ * the booking cannot reinstall the pre-booking row. */
+export function decrementCachedPublicListSeat(eventId: string) {
+  publicListCacheRevision += 1;
+  for (const key of Array.from(publicListCache.keys())) {
+    const entry = publicListCache.get(key);
+    if (entry === undefined || !entry.snapshot.items.some((item) => item.id === eventId)) continue;
+    publicListCache.set(key, {
+      snapshot: {
+        items: entry.snapshot.items.map((item) =>
+          item.id === eventId ? { ...item, seats_left: Math.max(0, item.seats_left - 1) } : item,
+        ),
+        total: entry.snapshot.total,
+      },
+      expiresAt: entry.expiresAt,
+    });
+  }
 }
 
 function safeListHref(href: string): string | null {
@@ -97,12 +139,12 @@ export function rememberEventListOrigin(
 ) {
   const safeHref = safeListHref(href);
   if (safeHref === null) return;
-  const snapshotKey = snapshot === undefined ? null : listKeyForHref(safeHref);
+  let snapshotKey = snapshot === undefined ? null : listKeyForHref(safeHref);
   if (snapshot !== undefined && snapshotKey !== null) {
     const parsed = new URL(safeHref, "https://eventbook.invalid");
     const query = parsed.searchParams.get("q") ?? "";
     const page = Math.max(1, Number.parseInt(parsed.searchParams.get("page") ?? "1", 10) || 1);
-    cachePublicEventList(query, page, snapshot);
+    if (getCachedPublicEventList(query, page) === null) snapshotKey = null;
   }
   origin = {
     eventId,

@@ -240,7 +240,7 @@ describe("account switching scopes rows immediately", () => {
 });
 
 describe("cached booking returns", () => {
-  it("renders same-session bookings immediately while the route refreshes them", async () => {
+  it("renders fresh same-session bookings without another request or updating status", async () => {
     apiMock.login.mockResolvedValue({
       access_token: "tok-A",
       token_type: "bearer",
@@ -249,22 +249,15 @@ describe("cached booking returns", () => {
     });
     apiMock.me.mockResolvedValue(USER_A);
     apiMock.myBookings.mockResolvedValueOnce({ items: [BOOKING], total: 1 });
-    let resolveRefresh!: (body: { items: typeof BOOKING[]; total: number }) => void;
-    apiMock.myBookings.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveRefresh = resolve)),
-    );
     render(<AuthProvider><BookingsRouteHarness /></AuthProvider>);
     fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
     await screen.findByText("Lockable Night");
 
     fireEvent.click(screen.getByText("toggle-bookings", { selector: "button" }));
     fireEvent.click(screen.getByText("toggle-bookings", { selector: "button" }));
-    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+    expect(apiMock.myBookings).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Lockable Night")).not.toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/updating bookings/i);
-
-    resolveRefresh({ items: [bookingFor("Fresh Night", "fresh")], total: 1 });
-    await screen.findByText("Fresh Night");
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("clears prior-session rows when the same account receives a new session", async () => {

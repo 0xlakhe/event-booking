@@ -10,7 +10,7 @@ import { AuthProvider, useAuth } from "../lib/auth";
 import { readToken, resetTokenStoreForTests } from "../lib/token_store";
 import type { EventDetail, EventSummary } from "../lib/api";
 import DetailPage from "./events/[id]/page";
-import { clearEventListOrigin, clearPublicEventListCache, getEventListOriginForEvent, rememberEventListOrigin } from "../lib/event_list_navigation";
+import { clearEventListOrigin, clearPublicEventListCache, getEventListOriginForEvent, invalidatePublicEventLists, rememberEventListOrigin } from "../lib/event_list_navigation";
 import { getCachedPublicEventDetail } from "../lib/public_event_cache";
 
 let queryValue = "";
@@ -73,15 +73,11 @@ afterEach(() => {
 });
 
 describe("stale search responses", () => {
-  it("restores an exact prior query and page immediately while refreshing it", async () => {
+  it("restores a fresh exact query and page without reloading it", async () => {
     apiMock.listEvents.mockReset();
     apiMock.listEvents
       .mockResolvedValueOnce({ items: [event("Ceramics Page Two")], total: 21 })
       .mockResolvedValueOnce({ items: [event("Music Page One")], total: 1 });
-    let resolveRefresh!: (body: { items: EventSummary[]; total: number }) => void;
-    apiMock.listEvents.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveRefresh = resolve)),
-    );
     queryValue = "q=ceramics&page=2";
     const view = render(<AuthProvider><Home /></AuthProvider>);
     await screen.findByText("Ceramics Page Two");
@@ -92,14 +88,10 @@ describe("stale search responses", () => {
 
     queryValue = "q=ceramics&page=2";
     view.rerender(<AuthProvider><Home /></AuthProvider>);
-    await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledTimes(3));
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Ceramics Page Two")).not.toBeNull();
     expect(screen.queryByText("Music Page One")).toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/updating events/i);
-
-    resolveRefresh({ items: [event("Fresh Ceramics Page Two")], total: 21 });
-    await screen.findByText("Fresh Ceramics Page Two");
-    expect(screen.queryByText("Ceramics Page Two")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("does not present previous-query events as the new results", async () => {
@@ -355,7 +347,7 @@ describe("login finalizes authentication readiness", () => {
 });
 
 describe("listing background refresh", () => {
-  it("keeps same-query events visible with an updating status until refreshed", async () => {
+  it("keeps a fresh public list ready across a session change without refetching", async () => {
     apiMock.listEvents.mockReset();
     apiMock.listEvents.mockResolvedValueOnce({ items: [event("Current Show")], total: 1 });
     apiMock.login.mockResolvedValue({
@@ -364,10 +356,6 @@ describe("listing background refresh", () => {
       expires_at: "2030-01-01T00:00:00Z",
       user: USER_B,
     });
-    let resolveRefresh!: (body: { items: EventSummary[]; total: number }) => void;
-    apiMock.listEvents.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveRefresh = resolve)),
-    );
     render(
       <AuthProvider>
         <Home />
@@ -378,11 +366,30 @@ describe("listing background refresh", () => {
 
     fireEvent.click(screen.getByText("login-b", { selector: "button" }));
 
-    expect((await screen.findByRole("status")).textContent).toMatch(/updating events/i);
+    await screen.findByText("b@example.com");
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByText("Current Show")).not.toBeNull();
-    resolveRefresh({ items: [event("Refreshed Show")], total: 1 });
-    await screen.findByText("Refreshed Show");
-    expect(screen.queryByText("Current Show")).toBeNull();
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fresh list cache expiry", () => {
+  it("reloads an expired exact-query result instead of presenting it as fresh", async () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    apiMock.listEvents.mockResolvedValueOnce({ items: [event("Recently Listed")], total: 1 });
+    const firstVisit = render(<AuthProvider><Home /></AuthProvider>);
+    await screen.findByText("Recently Listed");
+    firstVisit.unmount();
+
+    now += 30_001;
+    apiMock.listEvents.mockResolvedValueOnce({ items: [event("Reloaded Listing")], total: 1 });
+    render(<AuthProvider><Home /></AuthProvider>);
+
+    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
+    expect(screen.queryByText("Recently Listed")).toBeNull();
+    await screen.findByText("Reloaded Listing");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -492,7 +499,7 @@ describe("event intent prefetch and list restoration", () => {
     listing.unmount();
   });
 
-  it("warms public detail on focus and reuses it while refreshing availability", async () => {
+  it("warms public detail on focus and reuses the fresh completed prefetch", async () => {
     sessionStorage.setItem("eventbook.token", "tok-user");
     apiMock.me.mockResolvedValue({ id: "u-1", email: "user@example.com", role: "user" });
     apiMock.myBookings.mockResolvedValue({ items: [], total: 0 });
@@ -503,10 +510,8 @@ describe("event intent prefetch and list restoration", () => {
     };
     apiMock.listEvents.mockReset().mockResolvedValue({ items: [event("Warm Detail")], total: 1 });
     let resolveWarm!: (detail: EventDetail) => void;
-    let resolveRefresh!: (detail: EventDetail) => void;
     apiMock.getEvent
-      .mockImplementationOnce(() => new Promise((resolve) => void (resolveWarm = resolve)))
-      .mockImplementationOnce(() => new Promise((resolve) => void (resolveRefresh = resolve)));
+      .mockImplementationOnce(() => new Promise((resolve) => void (resolveWarm = resolve)));
     const listing = render(
       <AuthProvider>
         <Home />
@@ -529,13 +534,9 @@ describe("event intent prefetch and list restoration", () => {
     );
 
     expect(screen.getByText("A warm public description.")).not.toBeNull();
-    expect((await screen.findByRole("status")).textContent).toMatch(/updating availability/i);
-    expect(screen.getByText(/updating availability/i, { selector: "dd" })).not.toBeNull();
-    const bookingButton = screen.getByRole("button", { name: /checking availability/i });
-    expect((bookingButton as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(apiMock.getEvent).toHaveBeenCalledTimes(2));
-    await act(async () => resolveRefresh({ ...warmDetail, seats_left: 6 }));
-    await screen.findByText("6 / 10 seats left");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/updating availability/i)).toBeNull();
+    expect(apiMock.getEvent).toHaveBeenCalledTimes(1);
     detailView.unmount();
   });
 
@@ -652,20 +653,16 @@ describe("event intent prefetch and list restoration", () => {
     window.history.pushState({}, "", "/?q=ceramics&page=2");
     queryValue = "q=ceramics&page=2";
     pathnameState.value = "/";
-    let resolveList!: (body: { items: EventSummary[]; total: number }) => void;
-    apiMock.listEvents.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveList = resolve)),
-    );
+    apiMock.listEvents.mockClear();
     const restoredListing = render(
       <AuthProvider>
         <Home />
       </AuthProvider>,
     );
     expect(screen.getByText("Page Two")).not.toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/updating events/i);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(apiMock.listEvents).not.toHaveBeenCalled();
     expect(scrollTo).toHaveBeenCalledWith(0, 612);
-    await act(async () => resolveList({ items: [event("Restored Page Two")], total: 21 }));
-    await screen.findByText("Restored Page Two");
     expect(scrollTo).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/page 2 of/i)).not.toBeNull();
     restoredListing.unmount();
@@ -674,22 +671,53 @@ describe("event intent prefetch and list restoration", () => {
     pathnameState.value = "/events/unrelated";
     window.history.pushState({}, "", "/?q=ceramics&page=2");
     pathnameState.value = "/";
-    let resolveUnrelatedReturn!: (body: { items: EventSummary[]; total: number }) => void;
-    apiMock.listEvents.mockImplementationOnce(
-      () => new Promise((resolve) => void (resolveUnrelatedReturn = resolve)),
-    );
     render(
       <AuthProvider>
         <Home />
       </AuthProvider>,
     );
-    expect(screen.getByText("Restored Page Two")).not.toBeNull();
-    expect(screen.getByRole("status").textContent).toMatch(/updating events/i);
+    expect(screen.getByText("Page Two")).not.toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(scrollTo).toHaveBeenCalledTimes(1);
-    await act(async () => resolveUnrelatedReturn({ items: [event("Unrelated Return")], total: 21 }));
+    expect(apiMock.listEvents).not.toHaveBeenCalled();
   });
 
-  it("does not present snapshot availability as fresh when the return refresh fails", async () => {
+  it("restores the origin scroll after an invalidation once the refetched rows load", async () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    queryValue = "q=ceramics&page=2";
+    window.history.replaceState({}, "", "/?q=ceramics&page=2");
+    rememberEventListOrigin("id-Page Two", "/?q=ceramics&page=2", 612, {
+      items: [event("Stale Row")],
+      total: 1,
+    });
+    invalidatePublicEventLists();
+    let resolveList!: (body: { items: EventSummary[]; total: number }) => void;
+    apiMock.listEvents.mockReset().mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveList = resolve)),
+    );
+
+    render(
+      <AuthProvider>
+        <Home />
+      </AuthProvider>,
+    );
+
+    // An invalidated snapshot is never painted, so nothing may be restored
+    // while the list that the visitor actually returns to is still missing.
+    expect(screen.queryByText("Stale Row")).toBeNull();
+    await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    await act(async () => resolveList({ items: [event("Page Two")], total: 1 }));
+
+    // Once the fresh rows are committed the remembered position is restored.
+    expect(screen.getByText("Page Two")).not.toBeNull();
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 612));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not present invalidated return data as fresh when loading fails", async () => {
     const snapshotRow = event("Snapshot After Failure");
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     queryValue = "q=ceramics&page=2";
@@ -698,6 +726,7 @@ describe("event intent prefetch and list restoration", () => {
       items: [snapshotRow],
       total: 21,
     });
+    invalidatePublicEventLists();
     let rejectList!: (error: Error) => void;
     apiMock.listEvents.mockImplementationOnce(
       () => new Promise((_, reject) => void (rejectList = reject)),
@@ -708,12 +737,12 @@ describe("event intent prefetch and list restoration", () => {
       </AuthProvider>,
     );
 
-    expect(screen.getByText("Snapshot After Failure")).not.toBeNull();
-    expect(screen.getByText(/updating availability/i)).not.toBeNull();
+    expect(screen.queryByText("Snapshot After Failure")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
     await act(async () => rejectList(new TypeError("offline")));
 
     expect(await screen.findByRole("alert")).not.toBeNull();
-    expect(screen.getByText(/availability unavailable/i)).not.toBeNull();
+    expect(screen.getByRole("alert")).not.toBeNull();
     expect(screen.queryByText("9 seats left")).toBeNull();
   });
 

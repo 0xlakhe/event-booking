@@ -8,10 +8,10 @@ import { useAuth } from "../lib/auth";
 import { formatNepal, NEPAL_LABEL } from "../lib/datetime";
 import { getCachedPublicEventDetail, loadPublicEventDetail, prefetchPublicEventDetail } from "../lib/public_event_cache";
 import {
-  cachePublicEventList,
+  cachePublicEventListAtRevision,
   getCachedPublicEventList,
+  getPublicEventListCacheRevision,
   getEventListOriginForHref,
-  getEventListSnapshotForOrigin,
   consumeEventListOrigin,
   rememberEventListOrigin,
   type EventListOrigin,
@@ -61,20 +61,42 @@ function Listing() {
   const load = useCallback(async () => {
     const id = ++requestId.current;
     const key = JSON.stringify([query, page]);
+    const cached = getCachedPublicEventList(query, page);
+    if (cached !== null) {
+      setItems(cached.items);
+      setTotal(cached.total);
+      setLoadedKey(key);
+      setFailure(null);
+      setFailureKey(null);
+      setState(cached.items.length === 0 ? "empty" : "ready");
+      return;
+    }
+    setItems([]);
+    setTotal(0);
+    setLoadedKey(null);
     setState("pending");
     setFailure(null);
     setFailureKey(null);
+    const cacheRevision = getPublicEventListCacheRevision();
     try {
       const body = await api.listEvents(query, page, PAGE_SIZE);
       // Discard stale responses: only the latest query may render.
       if (requestId.current !== id) return;
-      cachePublicEventList(query, page, { items: body.items, total: body.total });
+      if (getPublicEventListCacheRevision() !== cacheRevision) {
+        void load();
+        return;
+      }
+      cachePublicEventListAtRevision(query, page, { items: body.items, total: body.total }, cacheRevision);
       setItems(body.items);
       setTotal(body.total);
       setLoadedKey(key);
       setState(body.items.length === 0 ? "empty" : "ready");
     } catch (err: unknown) {
       if (requestId.current !== id) return;
+      if (getPublicEventListCacheRevision() !== cacheRevision) {
+        void load();
+        return;
+      }
       if (err instanceof ApiRequestError && err.status === 401) markSessionExpired();
       setState("error");
       setFailure(err instanceof ApiRequestError ? err.message : "Could not load events.");
@@ -131,10 +153,8 @@ function Listing() {
   useBrowserLayoutEffect(() => {
     const href = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const origin = getEventListOriginForHref(href);
-    const originSnapshot = origin === null ? null : getEventListSnapshotForOrigin(origin);
-    restoringOrigin.current = originSnapshot === null ? null : origin;
+    restoringOrigin.current = origin;
     const snapshot = getCachedPublicEventList(query, page);
-    setLoadedKey(currentKey);
     setFailure(null);
     setFailureKey(null);
     if (snapshot === null) {
@@ -146,14 +166,15 @@ function Listing() {
     }
     setItems(snapshot.items);
     setTotal(snapshot.total);
-    setState("pending");
+    setLoadedKey(currentKey);
+    setState(snapshot.items.length === 0 ? "empty" : "ready");
   }, [currentKey, page, query]);
 
   useBrowserLayoutEffect(() => {
     const origin = restoringOrigin.current;
     if (origin === null || !hasCurrentResults) return;
     const href = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (getEventListOriginForHref(href) !== origin || getEventListSnapshotForOrigin(origin) === null) return;
+    if (getEventListOriginForHref(href) !== origin || getCachedPublicEventList(query, page) === null) return;
     const restoreKey = `${origin.eventId}:${origin.href}:${origin.capturedAt}`;
     if (restoredOrigin.current === restoreKey) return;
 
@@ -165,7 +186,7 @@ function Listing() {
     root.style.scrollBehavior = previousScrollBehavior;
     restoredOrigin.current = restoreKey;
     consumeEventListOrigin(origin);
-  }, [hasCurrentResults, currentKey]);
+  }, [hasCurrentResults, currentKey, page, query]);
 
   function search(next: string) {
     cancelEventNavigation();

@@ -2813,7 +2813,8 @@ Verification (2026-10-18, NPT):
 
 Limitations: no production request using an admin session, browser visual
 check, or screen-reader test was performed. This change is local and has not
-been committed, pushed, or deployed. No production data or sessions were used.
+been production-tested. The later release delivery is recorded below. No
+production data or sessions were used.
 
 ## TASK-008 bounded public-list and own-bookings cache follow-up (2026-10-18, NPT)
 
@@ -2856,6 +2857,128 @@ Verification (2026-10-18, NPT):
   independently ran the full suite (12 files, 135 passed) and typecheck before
   the correction. Review and tests used no production data or sessions.
 
-Limitations: no visual browser verification was performed. Changes are local;
-not committed, pushed, or deployed. The `.openchamber/` artifacts are unrelated
-untracked files and were left untouched.
+Limitations: no visual browser verification was performed. The release and
+read-only production checks are recorded below. The `.openchamber/` artifacts
+are unrelated untracked files and were left untouched.
+
+## TASK-008 UI release delivery (2026-10-18, NPT)
+
+- User authorized the release push and production redeploy. Reviewed frontend
+  and documentation changes were committed as
+  `2ddeca29c5161c58fe97f955d6e5726ee297488b` (`feat: cache public listings and
+  session bookings`) and pushed normally to `origin/main` (`f0799dd..2ddeca2`;
+  no force push). No unrelated `.openchamber/` artifacts were staged.
+- Immediately after the push, read-only requests to the stable production
+  domain `event-booking-chi-seven.vercel.app` returned: `/health` HTTP 200
+  (`status=ok`, database connected, schema ready); `/api/events?page=1&page_size=1`
+  HTTP 200 (one public event returned); that event's detail endpoint HTTP 200;
+  `/` HTTP 200 with the EventBook page. Response headers identified Vercel.
+- `cd frontend && npm test -- --run` → 12 files, 135 passed;
+  `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Exact Vercel deployment ID/Ready state could not be independently obtained:
+  this environment has no Vercel CLI/linkage or Vercel API credentials, and the
+  unauthenticated GitHub deployment/check endpoints returned 404 for this
+  repository. Stable-domain HTTP checks establish service availability after
+  the push but do not independently prove which commit Vercel built or its
+  dashboard Ready state.
+- No database/migration changes, production booking/user-data reads or writes,
+  authenticated browser flow, deployment configuration changes, or visual
+  browser smoke test were performed. Backend release commit remains unchanged.
+
+## TASK-008 fresh-cache navigation follow-up (2026-10-18, NPT)
+
+Scope: frontend-only behavior change after release. Fresh completed public list,
+public detail, and session-scoped own-booking results are ready immediately
+without background GETs or an updating label. All three use a bounded 30-second
+freshness window. Expired or invalidated results are fetched without presenting
+them as fresh. Private event-membership results are bounded to 32 entries per
+memory cache and are cleared with the bookings cache on auth changes. Cache
+revision guards prevent in-flight responses from restoring invalidated data;
+unfinished detail prefetches are not treated as hits. Mutation endpoints remain
+authoritative.
+
+Verification (2026-10-18, NPT):
+- Updated tests first and observed expected red failures for fresh no-request
+  paths, TTLs, and revision guards before implementation.
+- `cd frontend && npm test` → 12 files, 140 passed.
+- `cd frontend && npm run typecheck` → clean.
+- `git diff --check` → clean.
+- A fresh independent reviewer was requested after implementation; outcome is
+  pending and will be recorded after review/recheck. No production requests,
+  database access, or authenticated browser sessions were used for this change.
+
+Limitations: no browser visual verification. This follow-up has not yet been
+committed, pushed, or production-tested. The existing TASK-008 human/team-lead
+checkpoint is unchanged.
+
+## TASK-008 booked-return scroll-memory fix (2026-10-18, NPT)
+
+Scope: the user's deployed-site report — after booking an event from the list
+and returning, the events list landed at the top, while a view-only return kept
+its scroll position. Frontend-only; no REST or database contract changed.
+
+Cause: the confirmed-booking path cleared the public list cache
+(`invalidatePublicEventLists()`), and the return logic only restored scroll for
+a surviving cache entry, so a booked return had nothing to restore against.
+
+Change:
+- `frontend/src/lib/event_list_navigation.ts`:
+  `decrementCachedPublicListSeat(eventId)` corrects the booked event's row (one
+  fewer seat, never below zero) in every cached list that shows it, bumps the
+  list revision so an in-flight pre-booking response cannot reinstall the old
+  count, and preserves the entry's freshness window; lists without the event
+  are untouched.
+- `frontend/src/app/events/[id]/page.tsx`: the confirmed-booking path corrects
+  the cached rows instead of clearing them; rejected or uncertain outcomes
+  (network error, EVENT_FULL, ALREADY_BOOKED, 401, recovery) still clear the
+  list, so those returns refetch instead of showing possibly-wrong capacity.
+- `docs/TECHNICAL_DESIGN.md`: public-list cache paragraph updated to state the
+  correction, the revision bump, and that invalidated data is still never shown
+  as fresh.
+
+Verification (2026-10-18, NPT):
+- Mutation-checked regressions: reverting the success path to
+  `invalidatePublicEventLists()` fails the "keeps the returning list cached"
+  test; removing the catch-path clearing fails the "clears the returning list
+  when the booking is rejected" test; removing the revision bump fails the
+  "discards list responses captured before a booking correction" test; and the
+  "restores the origin scroll after an invalidation once the refetched rows
+  load" test fails under the pre-fix "no snapshot, no restore" gate.
+- `cd frontend && npm test -- --run` → 12 files, 146 passed;
+  `docker compose exec -T frontend npm test -- --run` → 12 files, 146 passed;
+  `npm run typecheck` → clean; `git diff --check` → clean.
+- Local browser (Chrome panel, seed `user@example.com`, working-tree code
+  served by the mounted frontend container):
+  - View-only control (Seed Event 09, no booking): returned to exactly
+    `scrollY` 575.
+  - Booking then Back inside the freshness window (Seed Event 09): returned to
+    exactly `scrollY` 575 showing "49 seats left" (50 cached − 1 corrected).
+    The backend access log for that window contains no public-list request in
+    the listing page's shape (`page_size=10`) after the booking POST — the
+    return was served from the corrected cache with no refetch. (A
+    `page_size=20` list request seconds later came from the cleanup tooling, not
+    the app.)
+  - Booking then Back after the entry expired (Seed Event 04 run; `page_size=10`
+    list requests logged on return): scroll restored to exactly 575 once the
+    fresh rows arrived, count truthful.
+- Demo data restored afterwards: all six test bookings (Seeds 04, 05, 06, 08,
+  09, 11) cancelled via the API; only the pre-existing Seed Event 03 booking
+  remains for the seed user, and availability matches the original seed state.
+
+Review (2026-10-18, NPT): fresh independent reviewer (subagent session
+`ses_eb1750414ffe60djKaIpkoMdxl`), read-only. Round 1 reported no blocking
+findings and three MINOR: missing catch-path regression, a latent revision gap
+(an in-flight pre-booking list response could reinstall the old count), and the
+pending PROGRESS record. Corrections: added the catch-path regression, added the
+revision bump with its regression, and this record. Reviewer recheck: both
+corrections independently mutation-verified (each correction's test fails when
+the corresponding line is reverted), no blocking findings remain. The reviewer
+did not reproduce the browser runs (would require a database write) — those
+remain builder-observed; the mechanism is independently covered by the
+mutation-verified tests. The review covered the combined working tree's booking
+path criteria, not the full scope of the fresh-cache follow-up entry above.
+
+Limitations: this fix is uncommitted and not deployed; production still builds
+`2ddeca2`, so the reported bug remains live until the tree is committed and
+redeployed, and the Vercel Production environment variables remain a user
+action (see the recovery runbook).

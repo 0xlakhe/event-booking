@@ -7,7 +7,12 @@ import { useAuth } from "../../lib/auth";
 import { hasStarted, useNow } from "../../lib/clock";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
 import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
-import { cacheOwnBookings, getCachedOwnBookings, invalidateOwnBookings } from "../../lib/own_bookings_cache";
+import {
+  cacheOwnBookings,
+  getCachedOwnBookings,
+  getOwnBookingsCacheRevision,
+  invalidateOwnBookings,
+} from "../../lib/own_bookings_cache";
 import { invalidatePublicEventLists } from "../../lib/event_list_navigation";
 
 const PAGE_SIZE = 10;
@@ -30,14 +35,18 @@ export default function BookingsPage() {
   const now = useNow();
   const userId = user?.id ?? null;
   const isAdmin = user?.role === "admin";
-  const [items, setItems] = useState<Booking[]>([]);
+  const initialKey = sessionIdentity === null ? null : JSON.stringify([sessionIdentity, 1]);
+  const initialCachedBookings = sessionIdentity === null ? null : getCachedOwnBookings(sessionIdentity, 1);
+  const [items, setItems] = useState<Booking[]>(() => initialCachedBookings?.items ?? []);
   // Account that fetched the rendered rows. Rendered rows are always
   // scoped to the signed-in account: switching accounts clears them
   // immediately and late responses from the old account are discarded.
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [loadedFor, setLoadedFor] = useState<string | null>(initialCachedBookings === null ? null : initialKey);
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [state, setState] = useState<"pending" | "ready" | "error" | "empty">("pending");
+  const [total, setTotal] = useState(initialCachedBookings?.total ?? 0);
+  const [state, setState] = useState<"pending" | "ready" | "error" | "empty">(() =>
+    initialCachedBookings === null ? "pending" : initialCachedBookings.items.length === 0 ? "empty" : "ready",
+  );
   const [failure, setFailure] = useState<string | null>(null);
   const [failureKey, setFailureKey] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -49,6 +58,7 @@ export default function BookingsPage() {
   const confirmationDialog = useRef<HTMLDialogElement | null>(null);
   const keepBookingButton = useRef<HTMLButtonElement | null>(null);
   const requestId = useRef(0);
+  const retryCurrentLoad = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (confirmationDialog.current?.open) confirmationDialog.current.close();
@@ -91,26 +101,42 @@ export default function BookingsPage() {
         setItems(cached.items);
         setTotal(cached.total);
         setLoadedFor(key);
+        setFailure(null);
+        setFailureKey(null);
+        setState(cached.items.length === 0 ? "empty" : "ready");
+        return;
       }
+      setItems([]);
+      setTotal(0);
+      setLoadedFor(null);
       setState("pending");
       setFailureKey(null);
       if (!keepFailure) setFailure(null);
+      const cacheRevision = getOwnBookingsCacheRevision();
       try {
         const body = await api.myBookings(token, page, PAGE_SIZE);
         if (requestId.current !== id || getToken() !== token || sessionIdentity !== identity) return;
+        if (getOwnBookingsCacheRevision() !== cacheRevision) {
+          retryCurrentLoad.current();
+          return;
+        }
         if (body.items.length === 0 && body.total > 0 && page > 1) {
           // The current page emptied under us (e.g. a cancellation on the
           // last page): step back instead of stranding the viewer.
           setPage(page - 1);
           return;
         }
-        cacheOwnBookings(identity, page, body);
+        cacheOwnBookings(identity, page, body, cacheRevision);
         setItems(body.items);
         setTotal(body.total);
         setLoadedFor(key);
         setState(body.items.length === 0 ? "empty" : "ready");
       } catch (err: unknown) {
         if (requestId.current !== id || getToken() !== token || sessionIdentity !== identity) return;
+        if (getOwnBookingsCacheRevision() !== cacheRevision) {
+          retryCurrentLoad.current();
+          return;
+        }
         if (err instanceof ApiRequestError && err.status === 401) {
           markSessionExpired();
           setItems([]);
@@ -125,6 +151,7 @@ export default function BookingsPage() {
     },
     [getToken, markSessionExpired, page, sessionIdentity],
   );
+  retryCurrentLoad.current = () => void load();
 
   useEffect(() => {
     if (ready && !isAdmin) void load();
@@ -179,6 +206,7 @@ export default function BookingsPage() {
         // restore the feedback the refresh would otherwise clear.
         // Re-check after the await: a switch mid-refetch leaves the
         // message to the new account's own flows.
+        if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
         await load(true);
         if (getToken() !== token) return;
         setFailure(cancelMessage(err.code, err.message));

@@ -1,6 +1,6 @@
 import { api, type EventDetail } from "./api";
 
-const CACHE_TTL_MS = 90_000;
+const CACHE_TTL_MS = 30_000;
 const CACHE_LIMIT = 20;
 const MAX_PREFETCHES = 3;
 
@@ -54,6 +54,8 @@ function requestDetail(eventId: string, isPrefetch: boolean): Promise<EventDetai
 }
 
 export function loadPublicEventDetail(eventId: string): Promise<EventDetail> {
+  const cached = getCachedPublicEventDetail(eventId);
+  if (cached !== null) return Promise.resolve(cached);
   const pendingPrefetch = requests.get(eventId);
   if (pendingPrefetch?.prefetch) {
     pendingPrefetch.invalidated = true;

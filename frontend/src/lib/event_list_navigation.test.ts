@@ -3,9 +3,12 @@ import {
   clearEventListOrigin,
   clearPublicEventListCache,
   cachePublicEventList,
+  cachePublicEventListAtRevision,
   consumeEventListOrigin,
+  decrementCachedPublicListSeat,
   getCachedPublicEventList,
   getEventListSnapshotForOrigin,
+  getPublicEventListCacheRevision,
   getEventListOriginForEvent,
   getEventListOriginForHref,
   invalidatePublicEventLists,
@@ -36,15 +39,72 @@ describe("event list return context", () => {
     let now = 1_800_000_000_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     cachePublicEventList("ceramics", 1, { items: [], total: 0 });
-    now += 30 * 60_000 + 1;
+    now += 30_001;
     expect(getCachedPublicEventList("ceramics", 1)).toBeNull();
     cachePublicEventList("music", 2, { items: [], total: 0 });
     invalidatePublicEventLists();
     expect(getCachedPublicEventList("music", 2)).toBeNull();
   });
 
+  it("does not repopulate list results from before invalidation", () => {
+    const revision = getPublicEventListCacheRevision();
+    invalidatePublicEventLists();
+    cachePublicEventListAtRevision("ceramics", 1, { items: [], total: 1 }, revision);
+
+    expect(getCachedPublicEventList("ceramics", 1)).toBeNull();
+  });
+
+  it("removes the booked seat from every cached list that shows the event", () => {
+    const row = (id: string, seatsLeft: number) => ({ id, seats_left: seatsLeft } as never);
+    cachePublicEventList("ceramics", 2, { items: [row("booked", 1), row("other", 5)], total: 2 });
+    cachePublicEventList("music", 1, { items: [row("other", 5)], total: 1 });
+
+    decrementCachedPublicListSeat("booked");
+
+    expect(getCachedPublicEventList("ceramics", 2)?.items).toMatchObject([
+      { id: "booked", seats_left: 0 },
+      { id: "other", seats_left: 5 },
+    ]);
+    expect(getCachedPublicEventList("music", 1)?.items).toMatchObject([{ id: "other", seats_left: 5 }]);
+
+    // Re-booking the same event must not push the count below zero.
+    decrementCachedPublicListSeat("booked");
+    expect(getCachedPublicEventList("ceramics", 2)?.items[0]).toMatchObject({ seats_left: 0 });
+  });
+
+  it("discards list responses captured before a booking correction", () => {
+    const snapshot = (seatsLeft: number) => ({
+      items: [{ id: "booked", seats_left: seatsLeft } as never],
+      total: 1,
+    });
+    cachePublicEventList("", 1, snapshot(2));
+    const staleRevision = getPublicEventListCacheRevision();
+
+    decrementCachedPublicListSeat("booked");
+    expect(getCachedPublicEventList("", 1)?.items[0]).toMatchObject({ seats_left: 1 });
+
+    // A list response that started before the booking carries the old count…
+    expect(cachePublicEventListAtRevision("", 1, snapshot(2), staleRevision)).toBe(false);
+    // …and must not replace the corrected row.
+    expect(getCachedPublicEventList("", 1)?.items[0]).toMatchObject({ seats_left: 1 });
+  });
+
+  it("keeps a corrected list row's freshness window unchanged", () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    cachePublicEventList("", 1, { items: [{ id: "booked", seats_left: 2 } as never], total: 1 });
+    now += 10_000;
+
+    decrementCachedPublicListSeat("booked");
+    expect(getCachedPublicEventList("", 1)?.items[0]).toMatchObject({ seats_left: 1 });
+
+    now += 20_001;
+    expect(getCachedPublicEventList("", 1)).toBeNull();
+  });
+
   it("shares the origin snapshot and pins it during bounded eviction", () => {
     const original = { items: [{ id: "origin" } as never], total: 1 };
+    cachePublicEventList("ceramics", 3, original);
     rememberEventListOrigin("origin", "/?q=ceramics&page=3", 420, original);
     const context = getEventListOriginForEvent("origin");
     for (let page = 1; page <= 9; page += 1) {

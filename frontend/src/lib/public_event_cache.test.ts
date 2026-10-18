@@ -29,7 +29,7 @@ function detail(eventId: string): EventDetail {
 
 beforeEach(() => {
   apiMock.getEvent.mockReset();
-  for (const eventId of ["cache-ttl", ...Array.from({ length: 22 }, (_, index) => `cache-size-${index}`), "cache-invalidated"]) {
+  for (const eventId of ["cache-ttl", "cache-fresh", ...Array.from({ length: 22 }, (_, index) => `cache-size-${index}`), "cache-invalidated"]) {
     invalidatePublicEventDetail(eventId);
   }
 });
@@ -47,8 +47,18 @@ describe("public event detail cache", () => {
     await loadPublicEventDetail("cache-ttl");
     expect(getCachedPublicEventDetail("cache-ttl")?.id).toBe("cache-ttl");
 
-    now += 90_001;
+    now += 30_001;
     expect(getCachedPublicEventDetail("cache-ttl")).toBeNull();
+  });
+
+  it("serves a fresh completed detail cache entry without another request", async () => {
+    apiMock.getEvent.mockResolvedValue(detail("cache-fresh"));
+    await loadPublicEventDetail("cache-fresh");
+    apiMock.getEvent.mockClear();
+
+    await expect(loadPublicEventDetail("cache-fresh")).resolves.toMatchObject({ id: "cache-fresh" });
+
+    expect(apiMock.getEvent).not.toHaveBeenCalled();
   });
 
   it("evicts oldest public details when the cache reaches its size bound", async () => {
