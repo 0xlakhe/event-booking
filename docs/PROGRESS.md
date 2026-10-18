@@ -2907,9 +2907,9 @@ Verification (2026-10-18, NPT):
   pending and will be recorded after review/recheck. No production requests,
   database access, or authenticated browser sessions were used for this change.
 
-Limitations: no browser visual verification. This follow-up has not yet been
-committed, pushed, or production-tested. The existing TASK-008 human/team-lead
-checkpoint is unchanged.
+Limitations: no browser visual verification. This follow-up is committed and
+pushed as part of `5d3e738`; the deployment rollout is recorded in the release
+entry below. The existing TASK-008 human/team-lead checkpoint is unchanged.
 
 ## TASK-008 booked-return scroll-memory fix (2026-10-18, NPT)
 
@@ -2978,7 +2978,32 @@ remain builder-observed; the mechanism is independently covered by the
 mutation-verified tests. The review covered the combined working tree's booking
 path criteria, not the full scope of the fresh-cache follow-up entry above.
 
-Limitations: this fix is uncommitted and not deployed; production still builds
-`2ddeca2`, so the reported bug remains live until the tree is committed and
-redeployed, and the Vercel Production environment variables remain a user
-action (see the recovery runbook).
+Limitations: this fix is committed and pushed as part of `5d3e738`; the
+deployment rollout and read-only production checks are recorded in the release
+entry below.
+
+## TASK-008 booking-scroll fix release (2026-10-18, NPT)
+
+- Committed `5d3e738` (`fix: restore event-list scroll across navigation and
+  booking returns`), covering this fix and the fresh-cache navigation follow-up
+  above, and pushed normally to `origin/main` (`2ddeca2..5d3e738`; no force
+  push). Untracked `.openchamber/` artifacts and
+  `frontend/tsconfig.tsbuildinfo` were left unstaged. The committed tree is
+  exactly the tree that passed verification (`git diff HEAD` clean after the
+  commit).
+- Deployment rollout confirmed by read-only polling of the stable domain
+  `event-booking-chi-seven.vercel.app`: the HTML etag changed from
+  `0e80d98f…` (age ≈ 4206 s) to `655e92844a9c9ba21359526898a76a13` (age 0) at
+  10:41:49 UTC, about three minutes after the push, so a new deployment
+  replaced the pre-push build. Post-rollout checks: `/health` HTTP 200
+  (`status=ok`, database connected, schema ready);
+  `/api/events?page=1&page_size=1` HTTP 200; an event detail endpoint HTTP 200;
+  `/` HTTP 200.
+- As with the previous release, the exact commit baked into the Vercel build
+  cannot be independently obtained here (no Vercel CLI/linkage or API
+  credentials). `5d3e738` was the only commit pushed to `origin/main` when the
+  new deployment rolled out, so the rollout is attributed to it on that basis;
+  the dashboard Ready state remains unverified.
+- Not performed: authenticated production browser flow, production booking or
+  user-data reads/writes, database or migration changes, or deployment
+  configuration changes.
