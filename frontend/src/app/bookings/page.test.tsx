@@ -291,7 +291,43 @@ async function waitForGone(text: string) {
 }
 
 describe("cancellation feedback survives refresh", () => {
-  it("keeps the error visible after the post-failure refetch", async () => {
+  it("keeps the error visible after the post-failure refetch, without blanking the list", async () => {
+    const { ApiRequestError } = await import("../../lib/api");
+    currentUser = USER_A;
+    apiMock.login.mockImplementation(async () => ({
+      access_token: "tok-A",
+      token_type: "bearer",
+      expires_at: "2030-01-01T00:00:00Z",
+      user: currentUser,
+    }));
+    apiMock.me.mockImplementation(async () => currentUser);
+    apiMock.myBookings.mockResolvedValueOnce({ items: [BOOKING], total: 1 });
+    let resolveRefetch!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefetch = resolve)),
+    );
+    apiMock.cancelBooking.mockRejectedValue(
+      new ApiRequestError(409, "EVENT_STARTED", "This event has already started."),
+    );
+    render(
+      <AuthProvider>
+        <SignInHarness />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+    await screen.findByText("Lockable Night");
+    await clickAndConfirmCancellation();
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+    // The failed cancellation must not blank the page while it refreshes.
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    expect(screen.queryByText(/loading bookings/i)).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/updating bookings/i);
+    resolveRefetch({ items: [BOOKING], total: 1 });
+    await screen.findByText(/already started/i);
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+  });
+
+  it("keeps the previous failure message while a repeated cancellation refreshes", async () => {
     const { ApiRequestError } = await import("../../lib/api");
     currentUser = USER_A;
     apiMock.login.mockImplementation(async () => ({
@@ -314,7 +350,18 @@ describe("cancellation feedback survives refresh", () => {
     await screen.findByText("Lockable Night");
     await clickAndConfirmCancellation();
     await screen.findByText(/already started/i);
-    expect(screen.getByText("Lockable Night")).not.toBeNull();
+
+    // A repeated attempt refreshes again: the existing message must stay
+    // visible while that refresh runs instead of flashing away and back.
+    let resolveRefetch!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefetch = resolve)),
+    );
+    await clickAndConfirmCancellation();
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(3));
+    expect(screen.getByText(/already started/i)).not.toBeNull();
+    resolveRefetch({ items: [BOOKING], total: 1 });
+    await screen.findByText(/already started/i);
   });
 });
 
@@ -396,7 +443,7 @@ describe("booking cancellation confirmation", () => {
     expect(apiMock.myBookings).toHaveBeenCalledTimes(2);
   });
 
-  it("removes the cancelled booking while refreshing the current page", async () => {
+  it("keeps the list on screen while the cancellation refresh runs", async () => {
     await renderBookingsForCancellation();
     let resolveRefresh!: (body: { items: typeof BOOKING[]; total: number }) => void;
     apiMock.myBookings.mockImplementationOnce(
@@ -407,8 +454,11 @@ describe("booking cancellation confirmation", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
 
     await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
-    expect((await screen.findByRole("status")).textContent).toMatch(/loading bookings/i);
-    expect(screen.queryByText("Lockable Night")).toBeNull();
+    // Rows must survive the refresh: clearing them first blanks the page
+    // and reads as a full reload.
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    expect(screen.queryByText(/loading bookings/i)).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/updating bookings/i);
     resolveRefresh({ items: [], total: 0 });
     await screen.findByText(/no bookings yet/i);
     expect(screen.queryByText("Lockable Night")).toBeNull();

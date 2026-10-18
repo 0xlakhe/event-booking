@@ -80,8 +80,14 @@ export default function BookingsPage() {
     keepBookingButton.current?.focus();
   }, [confirmation, userId]);
 
+  // Fetches the rendered page. `keepRows` refreshes in place instead of
+  // blanking the list first — used after a cancellation, where clearing
+  // the rows reads as a full page reload.
   const load = useCallback(
-    async (keepFailure = false) => {
+    async ({
+      keepFailure = false,
+      keepRows = false,
+    }: { keepFailure?: boolean; keepRows?: boolean } = {}) => {
       const token = getToken();
       const identity = sessionIdentity;
       if (token === null || identity === null) {
@@ -106,9 +112,11 @@ export default function BookingsPage() {
         setState(cached.items.length === 0 ? "empty" : "ready");
         return;
       }
-      setItems([]);
-      setTotal(0);
-      setLoadedFor(null);
+      if (!keepRows) {
+        setItems([]);
+        setTotal(0);
+        setLoadedFor(null);
+      }
       setState("pending");
       setFailureKey(null);
       if (!keepFailure) setFailure(null);
@@ -185,14 +193,11 @@ export default function BookingsPage() {
       invalidatePublicEventDetail(booking.event.id);
       invalidatePublicEventLists();
       if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
-      setItems([]);
-      setTotal(0);
-      setLoadedFor(null);
       // The account may have switched mid-flight: only the current
       // account's screen may refresh or show feedback. The new account's
       // own load (triggered by the switch) already covers its rows.
       if (getToken() !== token) return;
-      await load();
+      await load({ keepRows: true });
     } catch (err: unknown) {
       // A stale account's outcome is irrelevant once switched — in
       // particular its 401 must never expire the new session.
@@ -205,9 +210,11 @@ export default function BookingsPage() {
         // Refresh first so the message describes current state, then
         // restore the feedback the refresh would otherwise clear.
         // Re-check after the await: a switch mid-refetch leaves the
-        // message to the new account's own flows.
+        // message to the new account's own flows. The refresh keeps the
+        // rows on screen so a failed cancel does not read as a reload
+        // either.
         if (sessionIdentity !== null) invalidateOwnBookings(sessionIdentity);
-        await load(true);
+        await load({ keepFailure: true, keepRows: true });
         if (getToken() !== token) return;
         setFailure(cancelMessage(err.code, err.message));
         return;

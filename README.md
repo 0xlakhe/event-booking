@@ -53,8 +53,9 @@ one Vercel project with two Services and Supabase PostgreSQL in production.
 - **Admin** — create, edit, and delete events with a capacity guard, plus attendee lists. Started
   events are read-only so history is never rewritten.
 - **UX safeguards** — the events list remembers its scroll position across navigation (including
-  after a booking); bounded 30-second in-memory caches; stale-response, lost-response, and
-  account-switch guards; accessible loading, error, and empty states.
+  after a booking); cancellations refresh the bookings list in place instead of blanking it;
+  bounded 30-second in-memory caches; stale-response, lost-response, and account-switch guards;
+  accessible loading, error, and empty states.
 
 ## Tech stack
 
