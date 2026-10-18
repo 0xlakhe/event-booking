@@ -4,6 +4,7 @@ import AdminPage from "./page";
 import { AuthProvider, useAuth } from "../../lib/auth";
 import { resetTokenStoreForTests } from "../../lib/token_store";
 import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../lib/public_event_cache";
+import { clearAdminEventListCache } from "../../lib/admin_event_cache";
 
 const { routerMock, navState } = vi.hoisted(() => ({
   routerMock: { push: vi.fn(), replace: vi.fn() },
@@ -54,6 +55,7 @@ afterEach(() => {
   sessionStorage.clear();
   navState.search = "";
   resetTokenStoreForTests();
+  clearAdminEventListCache();
   vi.restoreAllMocks();
 });
 
@@ -290,6 +292,77 @@ describe("admin time filter", () => {
     await screen.findByText("Old");
     expect(apiMock.listEvents).toHaveBeenCalledWith("tok-admin", "", "past", 2, 10);
     expect(screen.getByRole("button", { name: "Past" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("serves a previously loaded filter from cache on return without refetching", async () => {
+    apiMock.listEvents
+      .mockResolvedValueOnce({ items: [summary("Soon", "2030-01-01T10:00:00Z")], total: 1 })
+      .mockResolvedValueOnce({ items: [summary("Old", "2020-01-01T10:00:00Z")], total: 1 });
+    const view = renderAdmin();
+    await screen.findByText("Soon");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(1);
+
+    navState.search = "time_filter=past";
+    view.rerender(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("Old");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
+
+    navState.search = "";
+    view.rerender(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("Soon");
+    expect(screen.queryByText("Old")).toBeNull();
+    expect(screen.queryByText(/loading events/i)).toBeNull();
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders a cached empty filter without refetching", async () => {
+    apiMock.listEvents
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockResolvedValueOnce({ items: [summary("Old", "2020-01-01T10:00:00Z")], total: 1 });
+    const view = renderAdmin();
+    await screen.findByText("No events found.");
+
+    navState.search = "time_filter=past";
+    view.rerender(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("Old");
+
+    navState.search = "";
+    view.rerender(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("No events found.");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches the active filter after an edit instead of serving the cached rows", async () => {
+    apiMock.getEvent.mockResolvedValue({ ...summary("Editable", "2030-01-01T10:00:00Z") });
+    apiMock.updateEvent.mockResolvedValue(undefined);
+    apiMock.listEvents
+      .mockResolvedValueOnce({ items: [summary("Editable", "2030-01-01T10:00:00Z")], total: 1 })
+      .mockResolvedValueOnce({ items: [summary("Renamed", "2030-01-01T10:00:00Z")], total: 1 });
+    renderAdmin();
+    await screen.findByText("Editable");
+
+    fireEvent.click(within(screen.getByText("Editable").closest("li")!).getByRole("button", { name: "Edit" }));
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.submit(saveButton.closest("form")!);
+
+    await screen.findByText("Renamed");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
   });
 
   it("resets to page one and preserves search when the filter changes", async () => {

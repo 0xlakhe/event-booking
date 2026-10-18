@@ -102,7 +102,7 @@ docker compose --profile tools run --rm tools pytest -q        # 110 passed
 
 # Frontend
 cd frontend
-npm test          # 146 tests (Vitest + Testing Library)
+npm test          # 153 tests (Vitest + Testing Library)
 npm run typecheck # tsc --noEmit
 ```
 

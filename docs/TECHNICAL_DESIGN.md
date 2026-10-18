@@ -205,6 +205,17 @@ revision checks prevent older in-flight responses from repopulating them.
 Tokens are never cached. These caches do not replace backend authorization or
 mutation checks.
 
+The admin events list uses the same bounded pattern: a memory-only LRU cache
+(12 entries, 30-second expiry) keyed by admin account, exact search query, time
+filter, and page. A fresh hit renders without a second request, so returning to
+a recently viewed Upcoming/Past/All tab or page reuses it, while expired entries
+refetch. Admin event creation, edit, and deletion invalidate the acting admin's
+cached entries before the post-mutation refresh, so saved changes are never
+masked by cached rows; rows changed by other clients age out within the window.
+Entries hold only admin-visible event rows, so — like the public list cache and
+unlike the private caches — they are not cleared on logout. Attendee lists are
+not cached.
+
 When opening detail from the public list, keep one short-lived same-tab origin
 containing only the list URL, event ID, scroll position, and bounded public
 page snapshot. Accept only a same-origin public-list path. “Back to events”

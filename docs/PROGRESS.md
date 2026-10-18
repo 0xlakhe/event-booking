@@ -3048,3 +3048,74 @@ Limitations:
   config.
 - Existing admin sessions on either environment remain valid until their 24 h
   expiry (sessions key on the user id; this change does not revoke them).
+
+## Admin events list caching (2026-10-18, NPT)
+
+User report: the admin Upcoming/Past/All tabs appeared to query the backend on
+every switch with no reuse.
+
+Changed:
+- `frontend/src/lib/admin_event_cache.ts` (new): memory-only LRU cache for admin
+  event list pages keyed by admin account, exact search query, time filter, and
+  page (12 entries, 30-second expiry — the same freshness window as the
+  public-list and own-bookings caches); LRU touch on read; revision-guarded
+  writes; `invalidateAdminEventLists(sessionIdentity)` drops only the acting
+  account's entries; `clearAdminEventListCache()` for tests.
+- `frontend/src/app/admin/page.tsx`: `load()` bumps the request id before
+  anything else (cache hits and sign-out also supersede in-flight responses),
+  serves a fresh cached page for the current key without a request, and caches
+  fetched pages after the existing token/session guards and a cache-revision
+  check (reload on mismatch, mirroring the public list page); admin
+  create/edit/delete invalidate the acting admin's cached entries before the
+  post-mutation refresh, so the refresh can never serve pre-mutation rows.
+- `frontend/src/lib/admin_event_cache.test.ts` (new): key isolation, TTL
+  expiry, entry bound, LRU read-touch, session-scoped invalidation, and
+  stale-write rejection.
+- `frontend/src/app/admin/page.test.tsx`: three regressions (returning to a
+  loaded filter makes no second request; an edit refetches instead of serving
+  cached rows; a cached empty filter still renders "No events found.") and
+  `clearAdminEventListCache()` in `afterEach` so tests never share cached rows.
+- `docs/TECHNICAL_DESIGN.md`: documents the admin cache, its invalidation rule,
+  and that it is not cleared on logout. `README.md`: test count 146 → 153.
+
+Evidence (actual runs):
+- `docker compose exec -T frontend npm test -- --run` → 153 passed (13 files;
+  146 before this change); `npm run typecheck` → clean.
+- Mutation checks (each reverted after): neutralizing the cache read made
+  "serves a previously loaded filter from cache on return without refetching"
+  fail; removing the save-path invalidation made "refetches the active filter
+  after an edit instead of serving the cached rows" fail. Both pass again after
+  revert.
+- Local-stack browser run (admin@admin.com; counts from the backend access log
+  for `GET /api/admin/events`): after a reload the upcoming filter had 3
+  requests; clicking Past → 1; back to Upcoming within the window → no new
+  request (still 3); All → 1. After 31 seconds, Upcoming and All refetched on
+  revisit (4 and 2), so fresh hits are reused and the freshness window forces
+  revalidation.
+
+Independent review (fresh reviewer subagent, session
+`ses_eb14b88baffeCvUXUoEJikFwOK`, read-only): no blocking findings. The
+reviewer ran the focused and full frontend suites (151 at review time) and
+typecheck, rebuilt scratch copies outside the repo to re-run both mutation
+checks (pre-change code fails the reuse test; stripped invalidation fails the
+edit test), traced invalidation → id-bump → cache-write ordering, and checked
+backend admin scope plus the other admin mutation surfaces. Corrections applied
+from its minor findings: the cache revision is now captured, checked, and
+passed on write (finding 1); TECHNICAL_DESIGN wording corrected from "admin
+session" to "admin account" with an explicit not-cleared-on-logout note
+(finding 2); README test count updated (finding 3); added the flagged test gaps
+(LRU read-touch unit test, cached-empty page test). Not adopted, recorded as
+suggestions: a post-mutation "third fetch" page test and a warmed-cache
+account-switch page test — the existing delete-refresh test and unit
+key-isolation already exercise those paths. The reviewer also noted two
+pre-existing observations (tautological `user?.id !== ownerId` guard; a
+mutation submitted while the filter changes mid-flight reloads the submit-time
+params) — unchanged, out of scope for this request.
+
+Limitations:
+- Rows changed by other clients (e.g. a user booking seats) can stay up to
+  30 seconds stale in the admin list — the same documented trade-off as the
+  public lists; the backend remains authoritative for every mutation.
+- Sign-out does not clear admin cache entries (documented); entries hold only
+  admin-visible rows and expire within the freshness window.
+- Deployed-site rollout verification follows in a separate docs commit.

@@ -6,6 +6,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import EventForm, { type EventFormValues } from "../../components/event-form";
 import EventDescription from "../../components/event-description";
 import { ApiRequestError, adminApi, api, type Attendee, type EventDetail, type TimeFilter } from "../../lib/api";
+import { cacheAdminEventList, getAdminEventListCacheRevision, getCachedAdminEventList, invalidateAdminEventLists } from "../../lib/admin_event_cache";
 import { useAuth } from "../../lib/auth";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
 import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
@@ -101,31 +102,55 @@ function Admin() {
   }, [user?.id, query, timeFilter, page]);
 
   const load = useCallback(async () => {
+    // Bump first: cache hits and sign-out must also supersede in-flight
+    // responses, so a late reply cannot land on the newly shown list.
+    const id = ++listRequestId.current;
     const token = getToken();
     const ownerId = user?.id ?? null;
     const key = JSON.stringify([ownerId, query, timeFilter, page]);
     if (token === null) {
-      // Invalidate any in-flight responses too, so a pre-sign-out
-      // request landing late cannot repopulate the cleared list.
-      listRequestId.current += 1;
       setItems([]);
       setLoadedListKey(null);
       setState("empty");
       return;
     }
-    const id = ++listRequestId.current;
+    if (ownerId !== null) {
+      const cached = getCachedAdminEventList(ownerId, query, timeFilter, page);
+      if (cached !== null) {
+        // Fresh cache hit: show this filter without a second request.
+        setItems(cached.items);
+        setTotal(cached.total);
+        setLoadedListKey(key);
+        setListFailure(null);
+        setListFailureKey(null);
+        setState(cached.items.length === 0 ? "empty" : "ready");
+        return;
+      }
+    }
     setState("pending");
     setListFailure(null);
     setListFailureKey(null);
+    const cacheRevision = getAdminEventListCacheRevision();
     try {
       const body = await adminApi.listEvents(token, query, timeFilter, page, PAGE_SIZE);
       if (listRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
+      if (getAdminEventListCacheRevision() !== cacheRevision) {
+        void load();
+        return;
+      }
+      if (ownerId !== null) {
+        cacheAdminEventList(ownerId, query, timeFilter, page, body, cacheRevision);
+      }
       setItems(body.items);
       setTotal(body.total);
       setLoadedListKey(key);
       setState(body.items.length === 0 ? "empty" : "ready");
     } catch (err: unknown) {
       if (listRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
+      if (getAdminEventListCacheRevision() !== cacheRevision) {
+        void load();
+        return;
+      }
       if (err instanceof ApiRequestError && err.status === 401) {
         markSessionExpired();
         setItems([]);
@@ -235,6 +260,7 @@ function Admin() {
         setEditing(null);
       }
       invalidatePublicEventLists();
+      if (user !== null) invalidateAdminEventLists(user.id);
       await load();
     } catch (err: unknown) {
       if (err instanceof ApiRequestError && err.status === 401) {
@@ -261,6 +287,7 @@ function Admin() {
       await adminApi.deleteEvent(token, eventId);
       invalidatePublicEventDetail(eventId);
       invalidatePublicEventLists();
+      if (user !== null) invalidateAdminEventLists(user.id);
       if (attendeesFor === eventId) setAttendeesFor(null);
       await load();
     } catch (err: unknown) {
