@@ -3230,3 +3230,15 @@ opens with "was deferred optional work at plan time").
 Limitations of this review: the live local `curl` check was not reproduced by
 the reviewer (isolated-target constraint) and remains builder-reported; no
 frontend files changed, so the frontend suite was not re-run.
+
+Deployed-site rollout (read-only): push `8ff6b5c`; the stable domain's HTML
+etag changed from `fc0fe56139da875e50a38efd05a9886a` to
+`a4f84e532fa87b13628456c11893476f` about 45 seconds later. `/`, `/health`, and
+`/api/events?page=1&page_size=1` all returned HTTP 200, and a live throttle
+check against a throwaway unknown email returned five 401
+`INVALID_CREDENTIALS` responses followed by 429 `TOO_MANY_ATTEMPTS` with
+`Retry-After: 55` (55 rather than 60 because the sliding window had already
+run ~5 seconds) — the first live confirmation that the new backend behavior is
+deployed. Failed logins write no database rows and the limiter state is
+in-memory, so no production data was mutated; no authenticated production
+requests were made.
