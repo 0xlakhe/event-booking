@@ -198,7 +198,7 @@ vercel.json  production contract: two Services and the /api/* + /health rewrites
 AGENTS.md    engineering rules used while building: readability, verification, review
 ```
 
-## Deployment (Vercel + Supabase)
+## Deployment
 
 Production is one Vercel project with two Services (`frontend/` nextjs, `backend/` fastapi)
 described by [vercel.json](vercel.json): `/api/*` and `/health` rewrite to FastAPI, everything
