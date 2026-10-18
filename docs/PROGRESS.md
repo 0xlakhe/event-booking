@@ -3124,3 +3124,109 @@ Limitations:
   checks returned HTTP 200 for `/`, `/health`, and
   `/api/events?page=1&page_size=1`. No authenticated production requests were
   made for this verification.
+
+## Bonus work: last-seat race proofs and login rate limiting (2026-10-18, NPT)
+
+User request: implement the two optional brief bonuses the README previously
+listed as not implemented — a scripted simultaneous-last-seat race
+demonstration and login rate limiting. This is beyond the shipped milestone
+scope; milestone statuses and human checkpoints are unchanged, and the work is
+recorded here as bonus completion.
+
+Changed:
+- `backend/app/rate_limit.py` (new): `SlidingWindowLimiter` — a deque of
+  failure timestamps per bucket key under one lock, injected clock, bounded
+  bucket table (`max_keys`, oldest-bucket eviction). Only failures are
+  recorded; a full bucket reports the seconds until its oldest failure leaves
+  the window.
+- `backend/app/auth.py`: login computes a bucket key (client address +
+  normalized email), rejects with `429 TOO_MANY_ATTEMPTS` and a `Retry-After`
+  header while the bucket is full, records failures on both the unknown-email
+  and wrong-password paths, and clears the bucket on success.
+- `backend/app/config.py`: `LOGIN_RATE_LIMIT_ATTEMPTS` (default 5, 1..1000)
+  and `LOGIN_RATE_LIMIT_WINDOW_SECONDS` (default 60, 1..86400) with bounds.
+- `backend/app/main.py`: `create_app` builds `app.state.login_limiter`.
+- `compose.yaml` and `.env.example`: pass and document the two variables.
+- `backend/tests/test_rate_limit.py` (new, 7 tests): limit/retry-after,
+  window expiry, clear, key isolation, bounded eviction, concurrent records,
+  and configuration validation — window and eviction assertions use an
+  injected clock; the concurrent case uses the real clock without sleeping.
+- `backend/tests/test_auth.py` (+4 tests): blocked after repeated failures
+  (the correct password still returns 429, other accounts are unaffected, no
+  session is created, `Retry-After` and `Cache-Control: no-store` asserted);
+  unknown emails are bucketed too; success clears the bucket; window expiry
+  allows again.
+- `backend/tests/test_concurrency.py` (+2 tests and helpers): barrier-fired
+  last-seat race (`test_simultaneous_last_seat_race_admits_exactly_one`) —
+  exactly one 201 and one `EVENT_FULL`, active count equals capacity, fixtures
+  purged afterwards; capacity edit racing a booking
+  (`test_capacity_edit_races_booking_without_overbooking`) — both writers
+  queue on the event row lock; booking 201, edit 200, final
+  active = capacity = 1. The module docstring no longer defers the bonus
+  proof.
+- `README.md`: accounts/API rules mention the throttle; bonus proofs described
+  under Tests; the two new variables in the config table; backend test count
+  110 → 122; the known-issues bullet replaced with the implemented status and
+  the in-process limitation. `docs/TECHNICAL_DESIGN.md`: the authentication
+  section documents the implemented limiter and its per-process limitation;
+  the concurrency section and proposed-test item 8 record the implemented race
+  tests instead of deferred work.
+
+Evidence (actual runs):
+- `docker compose --profile tools run --rm tools pytest -q` → 123 passed
+  (110 before; +13 new). Focused run of `tests/test_rate_limit.py
+  tests/test_auth.py tests/test_concurrency.py` → 34 passed.
+- Mutation checks (each reverted after): removing
+  `limiter.record_failure(...)` from the wrong-password path made
+  `test_login_rate_limit_blocks_after_failures` fail; neutralizing the capacity
+  check in `book_seat` made the race proof fail (both bookings succeed). Both
+  pass again after revert; `grep MUTATION backend/app` → clean.
+- Live local stack (`curl` against the hot-reloaded backend, unknown email):
+  five attempts returned 401 `INVALID_CREDENTIALS` and the sixth returned 429
+  `TOO_MANY_ATTEMPTS` with `Retry-After: 60` and `Cache-Control: no-store`.
+- No frontend files changed; the frontend suite count stays 153.
+
+Limitations:
+- Throttling state is per process: production may run several backend
+  instances, so each instance bounds its own buckets; a shared store would be
+  needed for fleet-wide limits. The bucket key is client address + email, only
+  failures are counted, and registration is not throttled.
+- The race proofs demonstrate the protocol against the isolated test database;
+  they are not a production load test.
+
+Independent review (fresh reviewer subagent, session
+`ses_eb13bafc7ffe7p6tSBSMs47Blb`, read-only): no blocking findings. The
+reviewer reproduced the focused/full counts (baseline run with the new tests
+deselected: 110 passed), re-ran ten mutations in a scratch copy (each reverted)
+— removing `record_failure` on both credential paths, removing clear-on-success,
+disabling the 429 check, neutralizing the capacity check, static `retry_after`,
+and disabling eviction/pruning among them — and found only one undetected gap
+(unknown-email failure counting). It confirmed the capacity-edit proof's
+assertions are order-independent (it forced the edit-first interleaving in
+scratch and the assertions held), read the changed code at line level, verified
+no existing assertion was weakened and no pre-existing test can trip the default
+limiter, and checked the doc statements against behavior.
+
+Corrections applied from its minor findings: added
+`test_login_rate_limit_counts_unknown_emails` (the reviewer's M8 mutation now
+fails the test, reproduced 3 runs — the gap is closed); status notes added to
+`docs/IMPLEMENTATION_PLAN.md` (TASK-009 bonus item, ALT-004) recording the
+post-release implementation without changing milestone state; the PROGRESS
+"injected clock" sentence corrected; README test count 122 → 123. Attempted and
+reverted: database-scoping the `pg_locks` waiter count — blocked row-lock
+waiters register as `transactionid` locks whose `database` is NULL, so the
+scoped filter hid exactly the waiters being counted (capacity-edit proof failed
+3/3). Not adopted, recorded as suggestions: insertion-order vs LRU eviction,
+alternately queuing the edit first, exposing `Retry-After` via CORS for the SPA,
+and documenting proxy address semantics for `request.client.host`.
+
+Recheck (same reviewer session): all four corrections verified (M8 now
+detected; plan notes accurate; wording corrected; helper restored
+byte-identical to the original with the semantics explanation independently
+confirmed); counts 123 (full) / 34 (focused) reproduced; no new blocking
+findings. Its one residual wording nit was fixed too (the ALT-004 line now
+opens with "was deferred optional work at plan time").
+
+Limitations of this review: the live local `curl` check was not reproduced by
+the reviewer (isolated-target constraint) and remains builder-reported; no
+frontend files changed, so the frontend suite was not re-run.

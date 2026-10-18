@@ -8,6 +8,7 @@ updates, never clock overrides.
 
 import hashlib
 import os
+import time
 import uuid
 
 import psycopg
@@ -65,6 +66,16 @@ def _login(api: TestClient, email: str, password: str = "password-123") -> dict:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _rate_limited_client(attempts: int, window_seconds: int = 60) -> TestClient:
+    settings = Settings(
+        DATABASE_URL=os.environ["TEST_DATABASE_URL"],
+        EXPECTED_ALEMBIC_REVISION=None,
+        LOGIN_RATE_LIMIT_ATTEMPTS=attempts,
+        LOGIN_RATE_LIMIT_WINDOW_SECONDS=window_seconds,
+    )
+    return TestClient(create_app(settings))
 
 
 def test_non_ascii_bearer_token_is_controlled_401(
@@ -367,3 +378,107 @@ def test_admin_dependency(
     allowed = api.get("/_test/admin-ping", headers=admin_headers)
     assert allowed.status_code == 200, allowed.text
     assert allowed.json() == {"ok": True, "role": "admin"}
+
+
+def test_login_rate_limit_blocks_after_failures(
+    clean_db: dict[str, str], migrator_conn: psycopg.Connection
+) -> None:
+    _ = clean_db
+    client = _rate_limited_client(attempts=3)
+    email = _email()
+    _register(client, email)
+    for _ in range(3):
+        resp = client.post(
+            "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+        )
+        assert resp.status_code == 401, resp.text
+    # the bucket is full: even the correct password is refused now
+    blocked = client.post(
+        "/api/auth/login", json={"email": email, "password": "password-123"}
+    )
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.json() == {
+        "error": {
+            "code": "TOO_MANY_ATTEMPTS",
+            "message": "Too many failed login attempts. Try again later.",
+        }
+    }
+    retry_after = blocked.headers.get("retry-after", "")
+    assert retry_after.isdigit() and 1 <= int(retry_after) <= 60
+    assert blocked.headers.get("cache-control") == "no-store"
+    # the bucket is one client address plus one email: other accounts are free
+    other = client.post(
+        "/api/auth/login", json={"email": _email(), "password": "password-123"}
+    )
+    assert other.status_code == 401, other.text
+    assert other.json()["error"]["code"] == "INVALID_CREDENTIALS"
+    # a throttled attempt creates no session
+    (sessions,) = migrator_conn.execute(
+        "SELECT count(*) FROM eventbook.sessions s "
+        "JOIN eventbook.users u ON u.id = s.user_id WHERE u.email = %s",
+        (email,),
+    ).fetchone()
+    assert sessions == 0
+
+
+def test_login_rate_limit_counts_unknown_emails(
+    clean_db: dict[str, str],
+) -> None:
+    _ = clean_db
+    client = _rate_limited_client(attempts=3)
+    email = _email()  # never registered: unknown accounts are bucketed too
+    for _ in range(3):
+        resp = client.post(
+            "/api/auth/login", json={"email": email, "password": "password-123"}
+        )
+        assert resp.status_code == 401, resp.text
+    blocked = client.post(
+        "/api/auth/login", json={"email": email, "password": "password-123"}
+    )
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+
+
+def test_login_rate_limit_clears_after_successful_login(
+    clean_db: dict[str, str],
+) -> None:
+    _ = clean_db
+    client = _rate_limited_client(attempts=3)
+    email = _email()
+    _register(client, email)
+    for _ in range(2):
+        resp = client.post(
+            "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+        )
+        assert resp.status_code == 401, resp.text
+    assert _login(client, email)["access_token"]
+    # the success cleared the bucket: two more failures are still ordinary 401s
+    # (they would be a 429 on the second one if the count had survived)
+    for _ in range(2):
+        resp = client.post(
+            "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+        )
+        assert resp.status_code == 401, resp.text
+
+
+def test_login_rate_limit_window_expiry_allows_again(
+    clean_db: dict[str, str],
+) -> None:
+    _ = clean_db
+    client = _rate_limited_client(attempts=2, window_seconds=1)
+    email = _email()
+    _register(client, email)
+    for _ in range(2):
+        resp = client.post(
+            "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+        )
+        assert resp.status_code == 401, resp.text
+    blocked = client.post(
+        "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+    )
+    assert blocked.status_code == 429, blocked.text
+    time.sleep(1.1)  # let the whole window pass
+    allowed = client.post(
+        "/api/auth/login", json={"email": email, "password": "wrong-pass-1"}
+    )
+    assert allowed.status_code == 401, allowed.text

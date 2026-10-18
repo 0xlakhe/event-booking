@@ -4,10 +4,13 @@ Hides hashing, sessions, and credential lookup behind a small interface:
 routes and later tasks receive a plain `UserActor`, never a password hash
 or session hash. Each resolution opens its own short read and closes it
 before returning, so module-owned write transactions in later tasks start
-with no open authentication transaction.
+with no open authentication transaction. Failed-login throttling is
+delegated to `app.rate_limit`: login supplies a client+account bucket key
+and records only failures.
 """
 
 import hashlib
+import math
 import re
 import secrets
 import uuid
@@ -23,6 +26,7 @@ from .config import Settings
 from .db import get_engine
 from .errors import ApiError
 from .passwords import hash_password, verify_password
+from .rate_limit import SlidingWindowLimiter
 
 SESSION_TTL = timedelta(hours=24)
 BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
@@ -103,6 +107,13 @@ def _bearer_token(request: Request) -> str | None:
     if scheme.lower() != "bearer" or not token.strip():
         return None
     return token.strip()
+
+
+def _login_key(request: Request, email: str) -> str:
+    """Throttling bucket: one client address plus one normalized email."""
+    client = request.client
+    host = client.host if client is not None else "unknown"
+    return f"{host}|{email}"
 
 
 def get_current_user(request: Request) -> UserActor:
@@ -198,6 +209,16 @@ def register(body: RegisterInput, request: Request) -> UserPublic:
 def login(body: LoginInput, request: Request) -> LoginResponse:
     settings: Settings = request.app.state.settings
     email = body.email
+    limiter: SlidingWindowLimiter = request.app.state.login_limiter
+    key = _login_key(request, email)
+    retry_after = limiter.retry_after(key)
+    if retry_after is not None:
+        raise ApiError(
+            429,
+            "TOO_MANY_ATTEMPTS",
+            "Too many failed login attempts. Try again later.",
+            {"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
     engine = get_engine(settings)
     with engine.connect() as conn:
         row = conn.execute(
@@ -209,9 +230,12 @@ def login(body: LoginInput, request: Request) -> LoginResponse:
         ).mappings().fetchone()
     if row is None:
         verify_password(body.password, _DUMMY_HASH)
+        limiter.record_failure(key)
         raise ApiError(401, "INVALID_CREDENTIALS", "Invalid email or password.", BEARER_CHALLENGE)
     if not verify_password(body.password, row["password_hash"]):
+        limiter.record_failure(key)
         raise ApiError(401, "INVALID_CREDENTIALS", "Invalid email or password.", BEARER_CHALLENGE)
+    limiter.clear(key)
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + SESSION_TTL
     with engine.begin() as conn:

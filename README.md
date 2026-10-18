@@ -32,7 +32,8 @@ Requirements, design, plan, and the evidence log live in
   and detail pages with description, venue, Nepal-time start, and availability.
 - **Accounts** — register, log in, log out with opaque session tokens (Argon2id password hashes,
   32-byte tokens stored as SHA-256, 24-hour expiry); `user` and `admin` roles are read from the
-  database on every request.
+  database on every request; repeated failed logins are throttled per client address + account
+  (`429 TOO_MANY_ATTEMPTS` with `Retry-After`).
 - **Booking** — one active seat per user per event, booked and cancelled under a database
   row-lock protocol; a cancellation frees the seat immediately; "My bookings" lists and cancels
   bookings.
@@ -98,7 +99,7 @@ open http://localhost:3000/
 
 ```sh
 # Backend: isolated test database (eventbook_test); the suite refuses non-test targets.
-docker compose --profile tools run --rm tools pytest -q        # 110 passed
+docker compose --profile tools run --rm tools pytest -q        # 123 passed
 
 # Frontend
 cd frontend
@@ -107,7 +108,10 @@ npm run typecheck # tsc --noEmit
 ```
 
 - Backend tests run against real PostgreSQL, so constraints, grants, row locks, and concurrency
-  behavior are exercised for real rather than through fakes.
+  behavior are exercised for real rather than through fakes. The bonus race proofs live in
+  `backend/tests/test_concurrency.py`: two barrier-fired bookings contend for one remaining seat
+  (exactly one 201 and one `EVENT_FULL`, active count stays equal to capacity), and a capacity edit
+  racing a booking serializes on the same event row lock so `active <= capacity` always holds.
 - Frontend tests cover the typed API client, auth hydration, list/detail/admin/bookings flows,
   and the cache and navigation regressions.
 
@@ -123,8 +127,9 @@ npm run typecheck # tsc --noEmit
 
 Rules enforced at the API: admins cannot book (`ADMIN_BOOKING_FORBIDDEN`) and manage events
 instead; user tokens cannot use admin routes; booking a full, already-booked, or started event is
-rejected (`EVENT_FULL`, `ALREADY_BOOKED`, `EVENT_STARTED`); errors are sanitized to stable
-machine-readable codes without internal detail.
+rejected (`EVENT_FULL`, `ALREADY_BOOKED`, `EVENT_STARTED`); repeated failed logins return
+`429 TOO_MANY_ATTEMPTS` with `Retry-After`; errors are sanitized to stable machine-readable codes
+without internal detail.
 
 ## Data model
 
@@ -164,6 +169,7 @@ Trade-offs:
 | `TEST_DATABASE_URL`, `TEST_MIGRATION_DATABASE_URL` | Isolated `eventbook_test` targets; the test suite refuses anything else |
 | `SEED_ADMIN_EMAIL`, `SEED_USER_EMAIL` (+ passwords) | Demo accounts created by the seed |
 | `APP_ENV`, `ALLOWED_ORIGINS`, `DB_POOL_SIZE`, `DB_CONNECT_TIMEOUT` | Backend runtime settings (exact CORS origins, bounded pool) |
+| `LOGIN_RATE_LIMIT_ATTEMPTS`, `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | Failed-login throttle, per client address + account (defaults: 5 failures per 60 s) |
 | `EXPECTED_ALEMBIC_REVISION` | Readiness gate for `/health` |
 | `NEXT_PUBLIC_API_BASE_URL` | Frontend API base; `/api` in production (inlined at build time) |
 
@@ -240,9 +246,11 @@ builder-reported results.
 
 ## Known issues and next steps
 
-- Optional brief bonuses not implemented: a scripted simultaneous-last-seat race demonstration
-  (capacity correctness itself is mandatory and covered by the row-lock protocol with `EVENT_FULL`,
-  post-lock eligibility, and lock-timeout tests in `backend/tests/`) and login rate limiting.
+- The optional brief bonuses are implemented: the simultaneous-last-seat race proof and a
+  capacity-edit race live in `backend/tests/test_concurrency.py`, and repeated failed logins are
+  throttled (`429 TOO_MANY_ATTEMPTS` with `Retry-After`). Throttling state is in-process, so with
+  multiple backend instances it bounds each instance's buckets rather than the whole fleet;
+  capacity correctness is row-lock enforced regardless.
 - Seed timestamps are relative to seeding time, so the demo dataset ages; re-run the seed for a
   fresh demo (the hosted dataset also drifts as people test).
 - Operational surface is intentionally small: sanitized errors and the `/health` readiness

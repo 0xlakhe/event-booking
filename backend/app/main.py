@@ -1,7 +1,8 @@
 """Application assembly and route wiring.
 
 Readiness rules live in `app.readiness`, auth behavior in `app.auth`,
-public browsing in `app.events`, error shape in `app.errors`.
+public browsing in `app.events`, error shape in `app.errors`, and
+failed-login throttling in `app.rate_limit`.
 Startup never mutates schema.
 """
 
@@ -24,6 +25,7 @@ from .errors import (
     validation_error_handler,
 )
 from .readiness import get_readiness
+from .rate_limit import SlidingWindowLimiter
 
 log = logging.getLogger("eventbook")
 
@@ -32,6 +34,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="EventBook API")
     app.state.settings = settings
+    app.state.login_limiter = SlidingWindowLimiter(
+        limit=settings.login_rate_limit_attempts,
+        window_seconds=float(settings.login_rate_limit_window_seconds),
+    )
 
     app.add_middleware(
         CORSMiddleware,

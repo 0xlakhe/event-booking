@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_connect_timeout: int = Field(default=3, alias="DB_CONNECT_TIMEOUT")
 
+    # In-process failed-login throttling (bucket = client address + email).
+    login_rate_limit_attempts: int = Field(default=5, alias="LOGIN_RATE_LIMIT_ATTEMPTS")
+    login_rate_limit_window_seconds: int = Field(
+        default=60, alias="LOGIN_RATE_LIMIT_WINDOW_SECONDS"
+    )
+
     # Tools-only URLs (optional for backend runtime; required in tools).
     migration_database_url: str | None = Field(default=None, alias="MIGRATION_DATABASE_URL")
     test_database_url: str | None = Field(default=None, alias="TEST_DATABASE_URL")
@@ -53,6 +59,20 @@ class Settings(BaseSettings):
     def _bound_pool(cls, v: int) -> int:
         if not 1 <= v <= 10:
             raise ValueError("DB_POOL_SIZE must be 1..10")
+        return v
+
+    @field_validator("login_rate_limit_attempts")
+    @classmethod
+    def _bound_login_attempts(cls, v: int) -> int:
+        if not 1 <= v <= 1000:
+            raise ValueError("LOGIN_RATE_LIMIT_ATTEMPTS must be 1..1000")
+        return v
+
+    @field_validator("login_rate_limit_window_seconds")
+    @classmethod
+    def _bound_login_window(cls, v: int) -> int:
+        if not 1 <= v <= 86_400:
+            raise ValueError("LOGIN_RATE_LIMIT_WINDOW_SECONDS must be 1..86400")
         return v
 
     def origins(self) -> list[str]:
