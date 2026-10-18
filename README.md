@@ -18,9 +18,8 @@ Requirements, design, plan, and the evidence log live in
 
 ## Live demo
 
-- **Admin:** `admin@example.com` · **User:** `user@example.com`. Passwords are provided with the
-  submission and are intentionally not stored in this repository. Registering a new account works
-  too.
+- **Admin:** `admin@admin.com` · **User:** `user@example.com`. Passwords are provided with the
+  submission. Registering a new account works too.
 - Try: browse and search the events list, open an event, book and cancel a seat from
   "My bookings", then log in as the admin to create, edit, or delete an event (started events are
   read-only).

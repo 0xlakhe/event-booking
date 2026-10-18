@@ -44,7 +44,7 @@ class SeedConfig:
     def from_env(cls) -> "SeedConfig":
         return cls(
             database_url=cls._required("MIGRATION_DATABASE_URL"),
-            admin_email=os.environ.get("SEED_ADMIN_EMAIL", "admin@example.com"),
+            admin_email=os.environ.get("SEED_ADMIN_EMAIL", "admin@admin.com"),
             admin_password=cls._required("SEED_ADMIN_PASSWORD"),
             user_email=os.environ.get("SEED_USER_EMAIL", "user@example.com"),
             user_password=cls._required("SEED_USER_PASSWORD"),

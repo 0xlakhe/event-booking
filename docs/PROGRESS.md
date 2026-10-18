@@ -3007,3 +3007,44 @@ entry below.
 - Not performed: authenticated production browser flow, production booking or
   user-data reads/writes, database or migration changes, or deployment
   configuration changes.
+
+## Seed admin credential change (2026-10-18, NPT)
+
+User request: change the seeded administrator account to `admin@admin.com` /
+`admin123` — both the seed configuration and the account itself.
+
+Changed:
+- Tracked: `backend/app/seed.py` and `compose.yaml` default admin email;
+  `.env.example` admin email and password; `README.md` live-demo admin email.
+  The seed stays insert-only (reruns never modify existing rows), so the live
+  and local accounts were updated in place instead of re-seeding.
+- Gitignored (local machine only): `.env` and `.env.release.local`
+  `SEED_ADMIN_*` values.
+- Data: the fixed seed admin row `11111111-1111-4111-8111-111111111111` in
+  `eventbook.users` on both the local database and hosted Supabase
+  (session-pooler migrator URL; target host printed as
+  `aws-0-ap-northeast-1.pooler.supabase.com`). Email replaced and the
+  Argon2id hash regenerated with the app's own `hash_password`; the
+  `user@example.com` account was not touched.
+
+Evidence (actual runs):
+- Update script on both targets: `before: admin@example.com` →
+  `after: admin@admin.com`; stored hash verifies against the new password
+  (`True`); the pre-check found no other row using the new email.
+- Local API: `POST /api/auth/login` as `admin@admin.com`/`admin123` → 200;
+  old email → 401; new email + old password → 401.
+- Live API (`https://event-booking-chi-seven.vercel.app`): login → 200;
+  `GET /api/auth/me` → `admin@admin.com` (`admin`); logout → 204 (the test
+  session was removed); old email → 401.
+- `docker compose config --quiet` → clean.
+- Backend suite re-run (`docker compose --profile tools run --rm tools pytest -q`)
+  → 110 passed (no collateral breakage; the credential defaults themselves are
+  not test-asserted).
+
+Limitations:
+- The only production write was the requested admin-row update, plus one
+  transient login session removed by the logout; no other production data was
+  touched. No Vercel redeploy is needed — credentials are data, not build
+  config.
+- Existing admin sessions on either environment remain valid until their 24 h
+  expiry (sessions key on the user id; this change does not revoke them).
