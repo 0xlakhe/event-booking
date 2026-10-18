@@ -1,10 +1,10 @@
 # EventBook (TASK-007 early slice)
 
-> Status: Hosted Supabase was provisioned, migrated to `0001_initial` and
-> seeded on 2026-10-17. The operator reports a Vercel deployment, but current
-> API requests return a sanitized unavailable response. This source adds
-> `0002_booking_hard_delete`; it is not applied to hosted PostgreSQL, so the
-> new readiness revision and cancellation privilege are not release-ready.
+> Status (2026-10-18): Hosted Supabase is migrated through
+> `0002_booking_hard_delete`, and Vercel deployment `5d5ae31` is Ready at
+> `event-booking-chi-seven.vercel.app`. Live health, listing, detail, and
+> homepage HTTP checks pass. Login with both seeded accounts and full live
+> role-flow acceptance remain unverified; see `docs/PROGRESS.md`.
 
 ## What exists
 

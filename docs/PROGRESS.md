@@ -2721,3 +2721,57 @@ Verification (2026-10-18, NPT):
   banner insertion from source and regression coverage, not a conclusively
   captured full-screen blank/reload. No deployment or release checkpoint is
   changed by this UI correction.
+
+## TASK-007 production release and deployment (2026-10-18, NPT)
+
+Authorization: user requested pushing the current code and applying only
+`0002_booking_hard_delete` to the live Supabase database. No seed, reset,
+cleanup, data copy, or unrelated infrastructure change was requested.
+
+Read-only baseline (2026-10-18, NPT):
+- The saved `.env.release.local` migration target resolves to the Supabase
+  session pooler in `ap-northeast-1`, database `postgres`, project ref
+  `hjrgswwdilyehzjzkysz`. A read-only `psql` session (`BEGIN READ ONLY`)
+  confirmed PostgreSQL 17.11, current login `eventbook_migrator`, revision
+  `0001_initial`, runtime `DELETE` on `eventbook.bookings` false, and
+  runtime `UPDATE(cancelled_at)` true. No rows were read or changed.
+- Vercel project `event-booking` production domain is
+  `event-booking-chi-seven.vercel.app`; deployment of `99d2e95` was Ready.
+  `GET /health` returned HTTP 200 with database connected and schema ready.
+  Production `NEXT_PUBLIC_API_BASE_URL` is `/api`; `EXPECTED_ALEMBIC_REVISION`
+  was `0001_initial` before this release preparation.
+- Updated only the Vercel Production `EXPECTED_ALEMBIC_REVISION` value to
+  `0002_booking_hard_delete` before deploy.
+- `docker compose --profile tools run --rm tools pytest -q` → 110 passed,
+  one Starlette/AnyIO deprecation warning, isolated test database only.
+- After the approval reviewer initially rejected the migration command, the
+  user explicitly authorized the exact migration and push. No workaround was
+  used. Revalidated project ref, database, current revision, and committed
+  migration before applying it. The migration only revokes runtime UPDATE of
+  `cancelled_at` and grants runtime DELETE on `eventbook.bookings`; no rows
+  were changed. `alembic upgrade 0002_booking_hard_delete` completed.
+- Read-only post-migration verification reported revision
+  `0002_booking_hard_delete`, runtime DELETE true, and runtime
+  UPDATE(`cancelled_at`) false.
+- Release commit `5d5ae31c181a543cc83860639eead6f4a201fc04` (28 scoped files)
+  was pushed normally to `origin/main` (`99d2e95..5d5ae31`; no force).
+- Vercel deployment `FV3uEvFMV9YPyUQXaCGsTkxgEvGy`, from commit `5d5ae31`,
+  reached Ready at `event-booking-chi-seven.vercel.app`.
+- Post-Ready live HTTP checks: `/health` → 200 (`status=ok`, database
+  connected, schema ready); `/api/events?page=1&page_size=1` → 200 (12 total,
+  one returned); `/api/events/{id}` → 200 (matching ID and populated title /
+  description); `/` → 200 (`EventBook`).
+- Verification already recorded for the release code: backend
+  `docker compose --profile tools run --rm tools pytest -q` → 110 passed,
+  one Starlette/AnyIO deprecation warning; frontend focused tests → 48 passed;
+  full frontend suite → 123 passed; `npm run typecheck` and `git diff --check`
+  clean.
+
+Limitations and remaining gate:
+- No seed, reset, cleanup, data copy, or booking/user-data mutation was done.
+  Verification was HTTP-level; no real login/booking role-flow or visual
+  browser verification is claimed. TASK-007 remains incomplete pending those
+  acceptance checks, the scripted hosted-provisioning equivalent, and the
+  independent milestone review / human checkpoint.
+- Local `.openchamber/` screenshot artifacts remain untracked and were not
+  included in either release commit.
