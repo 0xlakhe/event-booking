@@ -81,7 +81,6 @@ def test_book_returns_201_and_decrements_seats(
     resp = api.post(f"/api/events/{event_id}/bookings", headers=_auth(token))
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["cancelled_at"] is None
     assert body["event"]["id"] == event_id
     assert body["event"]["seats_left"] == 3
     assert body["created_at"].endswith("Z")
@@ -119,15 +118,20 @@ def test_cancel_frees_seat_and_allows_rebook(
     booking_id = api.post(f"/api/events/{event_id}/bookings", headers=headers).json()["id"]
     assert api.delete(f"/api/bookings/{booking_id}", headers=headers).status_code == 204
     assert api.get(f"/api/events/{event_id}").json()["seats_left"] == 1
+    with db.cursor() as cur:
+        (remaining,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s", (booking_id,)
+        ).fetchone()
+        assert remaining == 0
     again = api.post(f"/api/events/{event_id}/bookings", headers=headers)
     assert again.status_code == 201
+    assert again.json()["id"] != booking_id
     with db.cursor() as cur:
-        (total, active) = cur.execute(
-            "SELECT count(*), count(*) FILTER (WHERE cancelled_at IS NULL) "
-            "FROM eventbook.bookings WHERE event_id = %s",
+        (total,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE event_id = %s",
             (event_id,),
         ).fetchone()
-        assert (total, active) == (2, 1)
+        assert total == 1
 
 
 def test_full_event_rejects_booking(
@@ -181,10 +185,10 @@ def test_past_cancellation_rejected(
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "EVENT_STARTED"
     with db.cursor() as cur:
-        (cancelled,) = cur.execute(
-            "SELECT cancelled_at FROM eventbook.bookings WHERE id = %s", (booking_id,)
+        (remaining,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s", (booking_id,)
         ).fetchone()
-        assert cancelled is None
+        assert remaining == 1
 
 
 def test_owner_only_cancellation(
@@ -203,9 +207,14 @@ def test_owner_only_cancellation(
     with db.cursor() as cur:
         assert _active_count(cur, event_id) == 1
     assert api.delete(f"/api/bookings/{booking_id}", headers=_auth(owner)).status_code == 204
+    with db.cursor() as cur:
+        (remaining,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s", (booking_id,)
+        ).fetchone()
+        assert remaining == 0
 
 
-def test_repeated_cancel_is_idempotent(
+def test_repeated_cancel_returns_not_found(
     clean_db: dict[str, str], api: TestClient, db: psycopg.Connection
 ) -> None:
     _ = clean_db
@@ -216,14 +225,15 @@ def test_repeated_cancel_is_idempotent(
     headers = _auth(token)
     booking_id = api.post(f"/api/events/{event_id}/bookings", headers=headers).json()["id"]
     assert api.delete(f"/api/bookings/{booking_id}", headers=headers).status_code == 204
-    assert api.delete(f"/api/bookings/{booking_id}", headers=headers).status_code == 204
+    repeated = api.delete(f"/api/bookings/{booking_id}", headers=headers)
+    assert repeated.status_code == 404
+    assert repeated.json()["error"]["code"] == "NOT_FOUND"
     with db.cursor() as cur:
-        (total, active) = cur.execute(
-            "SELECT count(*), count(*) FILTER (WHERE cancelled_at IS NULL) "
-            "FROM eventbook.bookings WHERE event_id = %s",
+        (total,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE event_id = %s",
             (event_id,),
         ).fetchone()
-        assert (total, active) == (1, 0)
+        assert total == 0
         assert api.get(f"/api/events/{event_id}").json()["seats_left"] == 3
 
 
@@ -242,13 +252,28 @@ def test_own_history_pagination_and_isolation(
     for event_id in ids[1:]:
         api.post(f"/api/events/{event_id}/bookings", headers=mine_headers)
     api.post(f"/api/events/{other_event}/bookings", headers=theirs_headers)
-    api.delete(f"/api/bookings/{first_id}", headers=mine_headers)
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE eventbook.bookings SET cancelled_at = now() WHERE id = %s",
+            (first_id,),
+        )
+        db.commit()
 
+    legacy_cancel = api.delete(f"/api/bookings/{first_id}", headers=mine_headers)
+    assert legacy_cancel.status_code == 404
+    assert legacy_cancel.json()["error"]["code"] == "NOT_FOUND"
     history = api.get("/api/bookings/me", headers=mine_headers).json()
-    assert history["total"] == 3 and len(history["items"]) == 3
+    assert history["total"] == 2 and len(history["items"]) == 2
     assert history["items"][0]["created_at"] >= history["items"][-1]["created_at"]
-    cancelled = [b for b in history["items"] if b["cancelled_at"] is not None]
-    assert len(cancelled) == 1
+    with db.cursor() as cur:
+        (legacy_row_remains,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s", (first_id,)
+        ).fetchone()
+        assert legacy_row_remains == 1
+    active_id = history["items"][0]["id"]
+    assert api.delete(f"/api/bookings/{active_id}", headers=mine_headers).status_code == 204
+    refreshed = api.get("/api/bookings/me", headers=mine_headers).json()
+    assert refreshed["total"] == 1 and len(refreshed["items"]) == 1
     assert all("event" in item and "seats_left" in item["event"] for item in history["items"])
     assert history["items"][0]["created_at"].endswith("Z")
     assert api.get("/api/bookings/me", headers=mine_headers).headers.get("cache-control") == "no-store"

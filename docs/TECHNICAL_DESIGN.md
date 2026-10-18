@@ -27,13 +27,13 @@ Use a private `eventbook` schema outside Supabase's exposed Data API schemas. UU
 | `users` | `id uuid` PK; `email text` unique, stored trimmed and lowercase, CHECK nonempty and equal to normalized form; `password_hash text`; `role text` default `user`, CHECK in (`user`, `admin`); `created_at timestamptz`. |
 | `sessions` | `id uuid` PK; `user_id uuid` FK to users ON DELETE CASCADE; `token_hash text` unique; `created_at timestamptz`; `expires_at timestamptz`, CHECK greater than creation. Store only SHA-256 digest of the high-entropy bearer token. |
 | `events` | `id uuid` PK; `title text`; `description text`; `starts_at timestamptz`; `venue text`; `total_seats integer` CHECK > 0; `created_at timestamptz`; `updated_at timestamptz`. CHECK trimmed title, description, and venue are nonempty. |
-| `bookings` | `id uuid` PK; `user_id uuid` FK to users ON DELETE RESTRICT; `event_id uuid` FK to events ON DELETE CASCADE; `created_at timestamptz`; nullable `cancelled_at timestamptz`, CHECK null or >= creation. |
+| `bookings` | `id uuid` PK; `user_id uuid` FK to users ON DELETE RESTRICT; `event_id uuid` FK to events ON DELETE CASCADE; `created_at timestamptz`; nullable legacy `cancelled_at timestamptz`, CHECK null or >= creation. |
 
-Relations: one user has many sessions and bookings; one event has many bookings. An active booking has `cancelled_at IS NULL`. Rebooking inserts a new row after cancellation; previous records remain unless an event is deleted under the policy below. No public user deletion endpoint or event owner/organizer concept is needed.
+Relations: one user has many sessions and bookings; one event has many bookings. New cancellations delete the booking row; the nullable `cancelled_at` column remains only for compatibility with pre-existing soft-cancelled rows. Those legacy rows are excluded from seat counts, own-booking results, and new cancellation actions; this release does not clean them up.
 
 Indexes beyond PK/unique indexes:
 
-- Partial UNIQUE `(user_id, event_id) WHERE cancelled_at IS NULL` prevents duplicate active bookings.
+- Partial UNIQUE `(user_id, event_id) WHERE cancelled_at IS NULL` prevents duplicate current bookings while allowing legacy soft-cancelled rows to coexist.
 - Full `(user_id, created_at, id)` on bookings supports own-bookings queries and the user FK.
 - Full `(event_id)` on bookings supports the event FK and cascades; a small dataset does not need another active-event index initially.
 - `(starts_at, id)` on events supports upcoming listing order.
@@ -51,7 +51,7 @@ Registration inserts must omit `role` rather than explicitly setting even `user`
 
 Grant no `eventbook` access to PUBLIC, Supabase `anon`, or Supabase `authenticated`; check default privileges on future tables as well. Keep the schema outside the configured Data API exposure list. This design uses custom auth and backend authorization, not `auth.uid()` or Supabase Auth policies. Private-schema isolation and grants are the access control strategy; adding custom per-user RLS context is unnecessary for this small backend-only design. Verify isolation directly with unprivileged credentials.
 
-The runtime credential necessarily writes bookings and events; all app, seed, and maintenance writes must honor the transaction protocol. Cross-table capacity is not protected against arbitrary privileged SQL. Keep administrative SQL out of normal application flows and preserve the invariant in fixtures/seeds.
+The runtime credential writes bookings and events and deletes bookings; all app, seed, and maintenance writes must honor the transaction protocol. It has no UPDATE privilege on the legacy `cancelled_at` column. Cross-table capacity is not protected against arbitrary privileged SQL. Keep administrative SQL out of normal application flows and preserve the invariant in fixtures/seeds.
 
 ## Custom authentication
 
@@ -76,7 +76,7 @@ Public shapes:
 - `User`: `id`, `email`, `role`.
 - `EventSummary`: `id`, `title`, `starts_at`, `venue`, `total_seats`, `seats_left`.
 - `EventDetail`: summary fields plus `description`.
-- `Booking`: `id`, `event` (EventSummary), `created_at`, `cancelled_at` (nullable). No other user's identity in own-booking responses.
+- `Booking`: `id`, `event` (EventSummary), `created_at`. No other user's identity or cancellation-history flag in own-booking responses.
 - `Attendee`: `booking_id`, `user` (`id`, `email`), `booked_at`; active bookings only.
 - Collection envelope: `{ "items": [...], "page": 1, "page_size": 10, "total": 12 }`.
 
@@ -88,9 +88,9 @@ Public shapes:
 | `POST /api/auth/logout` | Authenticated | No body → 204. Already-invalid token → 401; frontend still clears local state. |
 | `GET /api/events` | Public | `q`, `page`, `page_size` → 200 paginated EventSummary; upcoming only. |
 | `GET /api/events/{event_id}` | Public | 200 EventDetail; past-event detail remains accessible. |
-| `GET /api/bookings/me` | Authenticated non-admin (admins 403) | `page`, `page_size` → 200 paginated own Bookings, active and cancelled, including past. |
+| `GET /api/bookings/me` | Authenticated non-admin (admins 403) | `page`, `page_size` → 200 paginated current bookings, including past; legacy soft-cancelled rows are excluded. |
 | `POST /api/events/{event_id}/bookings` | Authenticated non-admin (admins 403) | No body → 201 Booking. One seat; actor comes from session. |
-| `DELETE /api/bookings/{booking_id}` | Owner, non-admin (admins 403) | No body → 204; performs cancellation, not row deletion. |
+| `DELETE /api/bookings/{booking_id}` | Owner, non-admin (admins 403) | No body → 204 after hard-deleting the owned future booking; a repeat returns 404. |
 | `GET /api/admin/events` | Admin | `q`, `time_filter` (`upcoming` default, `past`, `all`), `page`, `page_size` → 200 paginated EventDetail, including descriptions. Public lists remain EventSummary. |
 | `POST /api/admin/events` | Admin | Full event input → 201 EventDetail. |
 | `PATCH /api/admin/events/{event_id}` | Admin | Nonempty subset of event input → 200 EventDetail. |
@@ -125,11 +125,11 @@ Finish authentication's read transaction before starting the module-owned transa
 
 **Book:** authenticate; begin; lock event or return 404; in a subsequent statement obtain `clock_timestamp()` and reject `starts_at <= current time`; check duplicate active booking; count active bookings in a separate statement after acquiring the lock; reject when count >= capacity; insert; commit; return 201. The unique partial index remains the duplicate guard. Return success only after commit.
 
-**Cancel:** authenticate; look up the booking scoped to the actor to obtain event ID without locking the booking; begin/continue transaction; lock the event first; reread booking and ownership; evaluate the event time with fresh database wall-clock time. Reject started events even if a cancellation is repeated. For a future event, already-cancelled own bookings return 204 without changing anything; otherwise set `cancelled_at`, commit, return 204. If the event/booking disappeared due to permitted deletion, return 404. Never lock booking first and event second.
+**Cancel:** authenticate; look up the booking scoped to the actor to obtain event ID without locking the booking; begin a READ COMMITTED transaction; lock the event first; reread booking and ownership; evaluate the event time with fresh database wall-clock time. Reject started events without mutation. For a future active booking, delete the row and commit before returning 204. A missing booking, a repeated cancellation after deletion, or a legacy soft-cancelled row returns the same 404; legacy rows are not deleted by this path. Never lock booking first and event second.
 
 **Edit:** admin check; lock event; reject with `EVENT_STARTED` when the event has already started (fresh wall-clock time after the lock), preserving started events as read-only history; count active bookings after lock; reject proposed total below the count; update validated fields and `updated_at`; commit. Changing a future event to a past time makes subsequent booking/cancellation fail; disclose this behavior in README and use clear UI feedback.
 
-**Delete:** admin check; lock event; reject with `EVENT_STARTED` when the event has already started, so historical data is never deleted or rewritten; reject with `EVENT_HAS_BOOKINGS` if any active booking exists. Otherwise delete the event and cascade its cancelled booking history; commit. This intentionally preserves events with active attendees and avoids silently cancelling them. Deleting an event with only cancelled bookings discards that history; document this small-app trade-off. Do not add force-delete or admin cancellation features.
+**Delete:** admin check; lock event; reject with `EVENT_STARTED` when the event has already started, so historical data is never deleted or rewritten; reject with `EVENT_HAS_BOOKINGS` if any current booking exists. Otherwise delete the event and cascade any legacy soft-cancelled rows; commit. This intentionally preserves events with active attendees and avoids silently cancelling them. Do not add force-delete or admin cancellation features.
 
 **Why last-seat races are safe:** writer A locks the event; writer B waits. A counts, inserts, and commits. B then obtains the event lock; its subsequent count statement sees A's committed booking under READ COMMITTED and rejects the full event. Capacity edits, cancellations, and deletion serialize on that same row. Avoid combining the pre-wait count into the locking statement/CTE, where a stale statement snapshot would defeat this protocol. A rolled-back writer consumes no seat. Fresh time after lock waits avoids admitting requests based on request-arrival time. Eligibility is judged at the locked check, not the instant a response reaches the browser.
 
@@ -155,11 +155,66 @@ focus, a skip link, reduced-motion support, and responsive stacking. This is a
 presentation follow-up to TASK-008; REST, session, and database contracts do not
 change.
 
+Collection refreshes retain results only while their owning context is unchanged:
+public events use query/page, event detail uses route ID, own bookings use
+account/page, and admin events use account/query/time filter/page. Matching
+background refreshes expose a compact accessible updating status and mark the
+collection busy; event availability is labeled as updating rather than presented
+as current. Initial loads and context changes use the stable loading state and
+must not display rows, counts, or pagination from another context. Account
+changes/logout must never expose previous private rows. A failed refresh may
+retain matching rows alongside retryable error feedback; request/session guards,
+existing action guards, and backend-authoritative availability remain unchanged.
+The event detail's initial request and Suspense fallback share a stable,
+layout-matching skeleton for the back link, heading, description, facts, and
+booking panel. A screen-reader-only status announces the load; skeleton shapes
+are decorative and hidden from assistive technology, and no actions are
+rendered until the current event is available.
+
+To reduce common-navigation latency without an unbounded data layer, list
+event links prefetch public detail only on hover, keyboard focus, or touch
+intent. Public detail responses are deduplicated and held in a memory-only LRU
+cache (20 entries, 90-second expiry) with at most three concurrent intent
+prefetches. The detail route may render cached descriptive content immediately,
+but always requests fresh detail; it marks availability as updating and keeps
+booking disabled until the current response confirms seats and start-time
+eligibility. Booking, cancellation, admin edit, and deletion invalidate the
+affected detail entry. The cache contains no session or booking-ownership data.
+
+When opening detail from the public list, keep one short-lived same-tab origin
+containing only the list URL, event ID, scroll position, and bounded public
+page snapshot. Accept only a same-origin public-list path. “Back to events”
+uses browser history only for a matching list origin and otherwise falls back
+to `/`; browser Back/Forward retains the normal history URL. On matching
+return, use the snapshot only as explicitly refreshing public content, then
+restore scroll in a layout-phase effect after the snapshot DOM is committed and
+layout is forced, before the browser can paint the list at the top. The normal
+list request proceeds immediately; if the origin expired or no longer matches,
+do not restore or reveal its snapshot. Consume the exact origin after restoring
+so a later same-URL visit cannot replay stale rows or override intentional
+scrolling. A failed refresh does not present snapshot availability as current.
+Do not globally suppress route scrolling.
+
+When a visitor activates a public-list event link with an ordinary same-tab
+click, keep the list rendered while the public detail request resolves. Show a
+small accessible opening status on that link, suppress duplicate activation of
+the same navigation, and only capture the list origin and navigate after the
+request succeeds. A failed request leaves a visible retry action on the list;
+a changed query/page or unmount makes its response inert. Modified clicks,
+downloads, and non-self targets retain native anchor behavior. A ready bounded
+public-detail cache entry may navigate immediately; the detail route renders
+that public description on its initial render but still treats availability as
+updating and obtains its own fresh response before enabling booking. Direct
+detail URLs retain the ordinary loading skeleton and retryable error state.
+While cached content refreshes, report pending availability in the existing
+availability row rather than inserting a banner above the detail grid; keep
+the booking action disabled until the fresh response succeeds.
+
 Store and compare instants in UTC. The event becomes ineligible when `starts_at <= database clock`. Reject timezone-naive API input. For the small app, present all dates and the admin form in **Nepal time**, visibly labeled `Asia/Kathmandu (UTC+05:45)`; convert the admin's local form value to an explicit `+05:45` timestamp before sending. Avoid interpreting `datetime-local` using the evaluator's device timezone. Return UTC, format explicitly in Nepal time, and use backend responses as the final authority.
 
 Proposed pages: upcoming events `/`, detail `/events/[id]`, `/register`, `/login`, `/bookings`, and `/admin` with event forms and attendee display. A simple responsive layout and small reusable forms suffice. Include all states required in `REQUIREMENTS.md`. Preserve search/page in URL parameters, reset page when search changes, and discard stale search responses. Route guards improve UX; backend permission checks remain decisive. Admins land on `/admin` after login, see no public Events navigation, and are redirected from public list/detail pages to management only after session restoration confirms their role. Upcoming and started admin cards show descriptions inline, with a three-line preview and accessible Read more/Read less controls only when the text overflows. Descriptions arrive in the paginated admin collection query, not per-card requests. Metadata appears once; there is no separate Details action or started-event notice. The admin list adds an Upcoming/Past/All time filter (Upcoming default) whose selection lives in a `time_filter` URL parameter so refresh and browser navigation preserve it; changing filters keeps the title search and resets to page one. Attendees stay reachable, and started events have no edit/delete controls; backend conflict messages still explain rejected mutations. The admin page carries no public-browsing link (no Back to events), since administration is a management-only flow; Logout comes from the shared navigation, and logging out from an admin route (`/admin` or `/admin/*`) returns the visitor to the public list `/` rather than leaving them on the admin "log in as an admin" prompt. Local state clears even when revocation fails, and the revocation warning stays visible on the destination page because it lives in shared auth state. These presentation choices are user-selected, not PDF mandates.
 
-On booking/cancellation/edit, disable duplicate submission while pending and refetch affected availability/bookings after success or capacity conflict. Do not optimistically claim a seat before commit. Show cancelled bookings distinctly; disable ineligible actions with an explanation. The frontend gates booking and cancellation on the event start time (`starts_at <= now`), updating on a lightweight interval so eligibility changes while the page stays open without a reload; the backend clock remains authoritative and still rejects started-event mutations. After a booking response is lost, the client never auto-retries: it scans the actor's entire booking history (there is no narrower per-event lookup endpoint) before reporting a definite absence, and reports an uncertain outcome when that verification itself fails. Authenticated responses use `Cache-Control: no-store`; avoid static caching of availability and private data. Clear private frontend state when auth changes.
+On booking/cancellation/edit, disable duplicate submission while pending and refetch affected availability/bookings after success or capacity conflict. Do not optimistically claim a seat before commit. Own-booking pages show current bookings only; cancellation removes the row from history after refetch, with no cancelled-status item. Disable ineligible actions with an explanation. The frontend gates booking and cancellation on the event start time (`starts_at <= now`), updating on a lightweight interval so eligibility changes while the page stays open without a reload; the backend clock remains authoritative and still rejects started-event mutations. After a booking response is lost, the client never auto-retries: it scans the actor's entire booking history (there is no narrower per-event lookup endpoint) before reporting a definite absence, and reports an uncertain outcome when that verification itself fails. The detail page reuses that scan on load — for signed-in users only — to derive the action label: a current booking for the event yields a disabled Booked, which outranks the full and started labels and suppresses the started note. The check only ever sets the marker, is guarded by a per-scan generation and the session token so a stale response from a previous event, account, or sign-out cannot mark the current screen, and failures leave the action available, with an ALREADY_BOOKED response as the repair path. A scan 401 is deliberately not an app-wide session-expiry trigger; the next authenticated action remains responsible for that. Authenticated responses use `Cache-Control: no-store`; avoid static caching of availability and private data. Clear private frontend state when auth changes.
 
 ## Seeds and tests
 
@@ -171,11 +226,11 @@ Use pytest and FastAPI TestClient against an isolated PostgreSQL test database/s
 
 Proposed meaningful tests (the brief requires at least three; these are selected coverage, not additional source requirements):
 
-1. Book → duplicate rejected → cancel → availability restored → rebook succeeds.
+1. Book → duplicate rejected → hard-delete cancellation → availability restored → rebook succeeds.
 2. Full and past events reject booking; past cancellation rejects without mutation.
 3. Another user cannot cancel a booking; unauthenticated/private calls fail; normal users cannot use any admin route.
 4. Reducing capacity below active count fails and leaves the event unchanged; equal count succeeds.
-5. Deletion rejects active bookings and permits deletion after cancellation, with expected history cascade.
+5. Deletion rejects active bookings and permits deletion when only legacy soft-cancelled rows remain, with the expected legacy-history cascade.
 6. Register cannot set role; password stored hashed; login, expiry, and logout invalidation work; private response fields never leak hashes.
 7. Search/pagination execute database filtering, stable ordering and correct totals; literal wildcard input is handled.
 8. Bonus evidence: two independent committed database connections book one remaining seat concurrently; exactly one succeeds, the other gets full, final active count equals capacity. Also exercise a capacity edit racing a booking if time permits.

@@ -8,6 +8,7 @@ import EventDescription from "../../components/event-description";
 import { ApiRequestError, adminApi, api, type Attendee, type EventDetail, type TimeFilter } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
+import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
 
 const PAGE_SIZE = 10;
 
@@ -61,6 +62,9 @@ function Admin() {
 
   const [items, setItems] = useState<EventDetail[]>([]);
   const [total, setTotal] = useState(0);
+  const [loadedListKey, setLoadedListKey] = useState<string | null>(null);
+  const [listFailure, setListFailure] = useState<string | null>(null);
+  const [listFailureKey, setListFailureKey] = useState<string | null>(null);
   const [state, setState] = useState<"pending" | "ready" | "error" | "empty">("pending");
   const [failure, setFailure] = useState<string | null>(null);
   const [draft, setDraft] = useState(query);
@@ -76,37 +80,52 @@ function Admin() {
 
   useEffect(() => setDraft(query), [query]);
 
+  useEffect(() => {
+    attendeesRequestId.current += 1;
+    setAttendeesFor(null);
+    setAttendees([]);
+    setAttendeesTotal(0);
+    setAttendeesPage(1);
+  }, [user?.id]);
+
   const load = useCallback(async () => {
     const token = getToken();
+    const ownerId = user?.id ?? null;
+    const key = JSON.stringify([ownerId, query, timeFilter, page]);
     if (token === null) {
       // Invalidate any in-flight responses too, so a pre-sign-out
       // request landing late cannot repopulate the cleared list.
       listRequestId.current += 1;
       setItems([]);
+      setLoadedListKey(null);
       setState("empty");
       return;
     }
     const id = ++listRequestId.current;
     setState("pending");
-    setFailure(null);
+    setListFailure(null);
+    setListFailureKey(null);
     try {
       const body = await adminApi.listEvents(token, query, timeFilter, page, PAGE_SIZE);
-      if (listRequestId.current !== id) return;
+      if (listRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
       setItems(body.items);
       setTotal(body.total);
+      setLoadedListKey(key);
       setState(body.items.length === 0 ? "empty" : "ready");
     } catch (err: unknown) {
-      if (listRequestId.current !== id) return;
+      if (listRequestId.current !== id || getToken() !== token || user?.id !== ownerId) return;
       if (err instanceof ApiRequestError && err.status === 401) {
         markSessionExpired();
         setItems([]);
+        setLoadedListKey(null);
         setState("empty");
         return;
       }
       setState("error");
-      setFailure(err instanceof ApiRequestError ? err.message : "Could not load events.");
+      setListFailure(err instanceof ApiRequestError ? err.message : "Could not load events.");
+      setListFailureKey(key);
     }
-  }, [getToken, markSessionExpired, query, timeFilter, page]);
+  }, [getToken, markSessionExpired, query, timeFilter, page, user?.id]);
 
   useEffect(() => {
     if (ready && user?.role === "admin") void load();
@@ -168,6 +187,7 @@ function Admin() {
         setCreating(false);
       } else {
         await adminApi.updateEvent(token, editing.id, values);
+        invalidatePublicEventDetail(editing.id);
         setEditing(null);
       }
       await load();
@@ -194,6 +214,7 @@ function Admin() {
     setFailure(null);
     try {
       await adminApi.deleteEvent(token, eventId);
+      invalidatePublicEventDetail(eventId);
       if (attendeesFor === eventId) setAttendeesFor(null);
       await load();
     } catch (err: unknown) {
@@ -230,7 +251,13 @@ function Admin() {
     navigate(query, timeFilter, nextPage);
   }
 
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentListKey = JSON.stringify([user?.id ?? null, query, timeFilter, page]);
+  const hasCurrentList = loadedListKey === currentListKey;
+  const hasCurrentListFailure = state === "error" && listFailureKey === currentListKey;
+  const isRefreshing = hasCurrentList && state === "pending";
+  const visibleItems = hasCurrentList ? items : [];
+  const visibleTotal = hasCurrentList ? total : 0;
+  const pages = Math.max(1, Math.ceil(visibleTotal / PAGE_SIZE));
   const attendeePages = Math.max(1, Math.ceil(attendeesTotal / PAGE_SIZE));
 
   return (
@@ -297,16 +324,16 @@ function Admin() {
             ))}
           </div>
 
-          {state === "pending" && <p className="empty-state" role="status">Loading events…</p>}
-          {state === "error" && (
+          {state === "pending" && <p className={isRefreshing ? "refresh-status" : "empty-state"} role="status">{isRefreshing ? "Updating events…" : "Loading events…"}</p>}
+          {hasCurrentListFailure && (
             <p role="alert">
-              {failure}{" "}
+              {listFailure}{" "}
               <button type="button" onClick={() => void load()}>
                 Retry
               </button>
             </p>
           )}
-          {state === "empty" && <p className="empty-state">No events found.</p>}
+          {state === "empty" && hasCurrentList && <p className="empty-state">No events found.</p>}
           {failure !== null && state !== "error" && <p role="alert">{failure}</p>}
 
           {creating && (
@@ -322,14 +349,14 @@ function Admin() {
             </div>
           )}
 
-          <ul className="admin-list">
-            {items.map((event) => (
+          <ul className="admin-list" aria-busy={isRefreshing}>
+            {visibleItems.map((event) => (
               <li key={event.id} className="card admin-card">
                 <h2>{event.title}</h2>
                 <div className="admin-meta">
                   <span>{event.venue}</span>
                   <time dateTime={event.starts_at} title={NEPAL_LABEL}>{formatNepal(event.starts_at)}</time>
-                  <span>{event.seats_left} / {event.total_seats} seats left</span>
+                  <span>{isRefreshing ? "Updating availability…" : `${event.seats_left} / ${event.total_seats} seats left`}</span>
                 </div>
                 <EventDescription key={event.description} description={event.description} />
                 {editing?.id === event.id ? (
@@ -400,9 +427,9 @@ function Admin() {
               </li>
             ))}
           </ul>
-          <div className="pagination">
+          {hasCurrentList && <div className="pagination">
             <p className="muted">
-              Page {page} of {pages} ({total} events)
+              Page {page} of {pages} ({visibleTotal} events)
             </p>
             <p className="button-row">
               <button type="button" disabled={page <= 1} onClick={() => go(page - 1)}>
@@ -412,7 +439,7 @@ function Admin() {
                 Next
               </button>
             </p>
-          </div>
+          </div>}
           <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
         </>
       )}

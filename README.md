@@ -1,16 +1,18 @@
 # EventBook (TASK-007 early slice)
 
-> Status: release preparation complete (full frontend flows, production
-> images, Vercel Services deployment config, release runbook); external
-> deployment blocked on missing hosting access — see Deployment below.
-> No live URLs yet.
+> Status: Hosted Supabase was provisioned, migrated to `0001_initial` and
+> seeded on 2026-10-17. The operator reports a Vercel deployment, but current
+> API requests return a sanitized unavailable response. This source adds
+> `0002_booking_hard_delete`; it is not applied to hosted PostgreSQL, so the
+> new readiness revision and cancellation privilege are not release-ready.
 
 ## What exists
 
 - `compose.yaml` with `db`, `backend`, `frontend` (waits for healthy backend),
   and `tools` (profile) services.
 - FastAPI backend with `create_app()`, validated config, bounded pool,
-  exact CORS, sanitized `/health` (200 with schema + revision `0001_initial`).
+  exact CORS, sanitized `/health` (ready only at the configured Alembic head;
+  this source now expects `0002_booking_hard_delete`).
 - Custom opaque-session auth (`POST /api/auth/register|login|logout`,
   `GET /api/auth/me`): Argon2id hashing, 32-byte tokens stored as
   SHA-256, 24h expiry, role read from the database per request.
@@ -20,7 +22,8 @@
   only, seats left, literal title search, server pagination, past detail.
 - Own bookings, normal users only (`POST /api/events/{id}/bookings`,
   `GET /api/bookings/me`, `DELETE /api/bookings/{id}`): B1–B4 under the
-  event-row lock protocol, cancellation frees the seat; admins get 403
+  event-row lock protocol, cancellation deletes the row and frees the seat;
+  admins get 403
   (`ADMIN_BOOKING_FORBIDDEN`) and manage events instead.
 - Admin (`GET/POST /api/admin/events`, `PATCH/DELETE
   /api/admin/events/{id}`, `GET .../attendees`): B5–B6, capacity guard,
@@ -41,7 +44,7 @@
   seed) follows the same lock-first protocol.
 - Deleting an event with any active booking fails (`EVENT_HAS_BOOKINGS`,
   past events included) to avoid silently cancelling attendees.
-  Otherwise the event is deleted and its cancelled history cascades.
+  Otherwise the event is deleted and any legacy soft-cancelled rows cascade.
 - Started events are read-only for admins (`EVENT_STARTED` on edit or
   delete, judged after the event lock with fresh database time); history
   is preserved, never deleted or rewritten.
@@ -49,14 +52,15 @@
   UI presents Nepal time. Editing an event into the past is allowed but
   makes later booking/cancellation fail with `EVENT_STARTED`.
 - Least-privilege roles: runtime cannot set `users.role` (column INSERT,
-  no UPDATE on `users`), cancellation flips `cancelled_at` only.
+  no UPDATE on `users`); migration `0002_booking_hard_delete` grants only the
+  booking DELETE needed for cancellation and revokes legacy timestamp UPDATE.
 - Repeatable seed: admin/user accounts, 13 events (12 upcoming + 1 past),
   one normal-user booking leaving a capacity-2 event nearly full.
-- Isolated pytest suite (108 tests) against `eventbook_test`.
+- Isolated pytest suite (110 tests) against `eventbook_test`.
 
-## Versions (provisional — no Supabase project access yet)
+## Versions (hosted PostgreSQL confirmed 2026-10-17)
 
-- PostgreSQL: `postgres:17-alpine` (running 17.11; reconcile at TASK-007)
+- PostgreSQL: `postgres:17-alpine` (17.11 local; hosted Supabase 17.11 — reconciled)
 - Backend base: `python:3.12-slim`; FastAPI 0.116.1, SQLAlchemy 2.0.35,
   psycopg 3.2.1, Alembic 1.14.1, argon2-cffi 23.1.0, Pydantic 2.9.2
 - Frontend base: `node:22-alpine`; Next.js 15.5.28, React 19.1.0, TypeScript 5.6.3
@@ -90,7 +94,9 @@ docker compose --profile tools run --rm tools pytest
   expiry CHECK (enforced by TASK-003 values).
 - `eventbook.events`: title/description/venue nonempty, `total_seats > 0`.
 - `eventbook.bookings`: user FK restrict, event FK cascade delete,
-  `cancelled_at` null-or-after-creation; active rows unique per user+event.
+  legacy `cancelled_at` null-or-after-creation; current API cancellation
+  deletes the row. Existing soft-cancelled rows are not cleaned up by migration
+  and are excluded from history and capacity counts.
 - `seats_left` is computed, never stored. Alembic version row lives in
   `eventbook.alembic_version` (migrator cannot CREATE in `public`);
   runtime holds SELECT on that row only.
@@ -140,7 +146,7 @@ vercel env add NEXT_PUBLIC_API_BASE_URL preview --no-sensitive      # /api
 vercel env add DATABASE_URL production --sensitive                  # postgresql+psycopg://<role>.<project-ref>@<pooler-host>/postgres?sslmode=require
 vercel env add APP_ENV production --no-sensitive                    # production
 vercel env add ALLOWED_ORIGINS production --no-sensitive            # https://<project>.vercel.app
-vercel env add EXPECTED_ALEMBIC_REVISION production --no-sensitive  # 0001_initial
+vercel env add EXPECTED_ALEMBIC_REVISION production --no-sensitive  # 0002_booking_hard_delete
 vercel env add DB_POOL_SIZE production --no-sensitive               # e.g. 2
 # Preview, only when it gets its own Supabase project/branch:
 vercel env add DATABASE_URL preview --sensitive
@@ -173,21 +179,43 @@ vercel env add DATABASE_URL preview --sensitive
 
 ### Release order (one authorized action; not app or worker startup)
 
-1. **Supabase provisioning — still open TASK-007 work.** The local
-   bootstrap (`python -m app.bootstrap_local`) only provisions the
-   Compose databases (`eventbook_dev`/`eventbook_test`) and their
-   roles; it does not prepare hosted Postgres. Before any hosted
-   migration can run, the release must create/confirm on the Supabase
-   project: the `eventbook_migrator` and `eventbook_runtime` login roles
-   with their passwords, CONNECT/CREATE grants on the target database
-   (`postgres` unless a dedicated database is created), the empty
-   `eventbook` schema owned by the migrator, and
-   `anon`/`authenticated`/`service_role` with no eventbook access. Adapt
-   the hosted grants to the platform rather than copying the local
-   `REVOKE ... FROM PUBLIC` and platform-role revokes onto the shared
-   `postgres` database. Until that exists, step 2 cannot succeed on
-   Supabase; implement it (script or documented manual steps) as part of
-   TASK-007.
+1. **Supabase provisioning — performed manually on the hosted project
+   (2026-10-17, SQL editor); a scripted equivalent is still open
+   TASK-007 work.** The local bootstrap
+   (`python -m app.bootstrap_local`) provisions only the Compose
+   databases (`eventbook_dev`/`eventbook_test`) and their roles. The
+   hosted setup ran as the project's `postgres` role with this
+   idempotent SQL (operator-chosen passwords):
+
+   ```sql
+   DO $$
+   BEGIN
+     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'eventbook_migrator') THEN
+       CREATE ROLE eventbook_migrator LOGIN;
+     END IF;
+     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'eventbook_runtime') THEN
+       CREATE ROLE eventbook_runtime LOGIN;
+     END IF;
+   END
+   $$;
+   ALTER ROLE eventbook_migrator PASSWORD '<migrator-password>';
+   ALTER ROLE eventbook_runtime  PASSWORD '<runtime-password>';
+   -- Supabase's `postgres` is not a superuser: `CREATE SCHEMA ...
+   -- AUTHORIZATION` and `ALTER ... OWNER TO` perform a SET ROLE check
+   -- that fails with 42501 unless `postgres` is a member of the role.
+   GRANT eventbook_migrator TO postgres;
+   GRANT CONNECT ON DATABASE postgres TO eventbook_migrator, eventbook_runtime;
+   GRANT CREATE  ON DATABASE postgres TO eventbook_migrator;
+   -- Alembic stamps its version table before the migration body runs,
+   -- so the schema shell must pre-exist, owned by the migrator.
+   CREATE SCHEMA IF NOT EXISTS eventbook AUTHORIZATION eventbook_migrator;
+   ALTER SCHEMA eventbook OWNER TO eventbook_migrator;
+   ```
+
+   Hosted grants deliberately do not copy the local `REVOKE ... FROM
+   PUBLIC` / platform-role revokes onto the shared `postgres` database.
+   Verified after provisioning: `anon`, `authenticated` and
+   `service_role` have no `eventbook` usage (false/false/false).
 2. Migrations and seed from a machine that can reach Supabase and has a
    populated `.env` (Compose still requires the `.env` role/test/seed
    values even for one-off tools runs). Exported values override
@@ -202,6 +230,18 @@ vercel env add DATABASE_URL preview --sensitive
    docker compose --profile tools run --rm tools python -m app.seed
    ```
 
+   Docker Desktop containers have no IPv6 route, so they cannot reach
+   the direct `db.<ref>` host (`Network is unreachable`). Use the
+   session-pooler URLs above (portable, and the path Vercel uses), or
+   run the one-off container with `--network host` to borrow the host
+   machine's IPv6 (used once for the initial hosted run).
+
+   The deployed database was last verified at `0001_initial`. Current source
+   also requires `0002_booking_hard_delete` before the new readiness revision
+   is healthy. Do not deploy this source until an authorized release applies
+   the migration and sets `EXPECTED_ALEMBIC_REVISION=0002_booking_hard_delete`.
+   The migration changes grants only; it does not delete existing booking rows.
+
 3. `vercel deploy` (Preview) → check the Preview frontend (and
    `vercel curl /api/health --deployment <url>` — it handles Deployment
    Protection — once Preview has its own database) → `vercel deploy
@@ -209,17 +249,21 @@ vercel env add DATABASE_URL preview --sensitive
    ready, both demo logins work, and the event list renders on the live
    URL.
 
-Supabase specifics to confirm on the project: PostgreSQL major version,
-TLS, pool limits, `eventbook` schema kept out of the Data API exposed
-list, and `anon`/`authenticated` with no eventbook grants. Keep the
-release live two weeks after submission; record observed cold-start
-behavior here once a live URL exists.
+Supabase specifics: PostgreSQL 17.11 and TLS (`sslmode=require`) are
+confirmed; `anon`/`authenticated`/`service_role` were verified with no
+`eventbook` usage (false/false/false, 2026-10-17). Still to confirm on
+the dashboard: `eventbook` kept out of the Data API exposed-schema list
+and the project's pool/connection limits. Keep the release live two
+weeks after submission; record observed cold-start behavior here once a
+live URL exists.
 
-Missing before any external deployment (no access exists yet): a
-Supabase project (URL + DB password + pooler URL), a Vercel account
-with this repository imported as a Services project, GitHub repository
-+ evaluator access, and human authorization for each external step.
-Nothing has been deployed; there are no live URLs.
+Deployment state (2026-10-18): the hosted database was last verified at
+`0001_initial`; the operator reports Vercel has been configured and redeployed.
+The public frontend loads, but current `/api/events` and `/api/health` requests
+return `TEMPORARILY_UNAVAILABLE`. This source requires the unapplied
+`0002_booking_hard_delete` migration and matching expected revision. This task
+does not apply migrations, change Vercel settings, or redeploy. Resume the
+release only with explicit authorization for those external actions.
 
 ## Data persistence
 
@@ -235,10 +279,11 @@ Nothing has been deployed; there are no live URLs.
   the capacity-2 demo event is currently full because a real
   non-seed account booked the last seat; see PROGRESS for the cleanup
   decision owned by the human.
-- Backend `healthy` requires schema + revision (verified 200 since
-  TASK-002 migrated).
+- Backend `healthy` requires schema + configured revision. The local target
+  is now `0002_booking_hard_delete`; the hosted migration and live readiness
+  remain unverified.
 - Commit history has not been independently reviewed. The repository
   exists (`main` ↔ `origin`, GitHub `0xlakhe/event-booking`) and
   `.gitignore` excludes real `.env` files.
-- No external deployment (blocked: see Deployment above for the exact
-  missing inputs). Local release artifacts verified instead.
+- Release migration `0002_booking_hard_delete` and live post-migration
+  verification remain pending; do not treat repository code as deployed.

@@ -162,6 +162,19 @@ def test_runtime_cannot_create_tables(clean_db: dict[str, str]) -> None:
             conn.rollback()
 
 
+def test_runtime_can_delete_bookings_but_cannot_soft_cancel(
+    clean_db: dict[str, str],
+) -> None:
+    with _pg(clean_db["runtime_url"]) as conn:
+        with conn.cursor() as cur:
+            can_delete, can_update_cancelled = cur.execute(
+                "SELECT has_table_privilege(current_user, 'eventbook.bookings', 'DELETE'), "
+                "has_column_privilege(current_user, 'eventbook.bookings', 'cancelled_at', 'UPDATE')"
+            ).fetchone()
+    assert can_delete
+    assert not can_update_cancelled
+
+
 def test_public_has_no_eventbook_access(clean_db: dict[str, str]) -> None:
     with _pg(clean_db["migration_url"]) as conn:
         with conn.cursor() as cur:

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Expected Alembic head revision for readiness. When set, /health
     # requires an exact match; when unset, any stored revision suffices.
-    # TASK-002 initial revision: 0001_initial (see .env.example).
+    # The deployment sets this to the current Alembic head (see .env.example).
     expected_alembic_revision: str | None = Field(
         default=None, alias="EXPECTED_ALEMBIC_REVISION"
     )

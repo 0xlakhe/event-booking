@@ -120,7 +120,7 @@ def test_admin_booking_endpoints_forbidden(
     assert real.json()["error"]["code"] == "ADMIN_BOOKING_FORBIDDEN"
     with db.cursor() as cur:
         (active,) = cur.execute(
-            "SELECT count(*) FROM eventbook.bookings WHERE id = %s AND cancelled_at IS NULL",
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s",
             (booking_id,),
         ).fetchone()
         assert active == 1
@@ -184,8 +184,8 @@ def test_normal_user_booking_still_works(
     assert history.status_code == 200 and history.json()["total"] == 1
     assert api.delete(f"/api/bookings/{created.json()['id']}", headers=headers).status_code == 204
     with db.cursor() as cur:
-        (active,) = cur.execute(
-            "SELECT count(*) FROM eventbook.bookings WHERE event_id = %s AND cancelled_at IS NULL",
+        (remaining,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE event_id = %s",
             (event_id,),
         ).fetchone()
-        assert active == 0
+        assert remaining == 0

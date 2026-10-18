@@ -3,11 +3,12 @@
 Mirrors `docs/TECHNICAL_DESIGN.md`: UUID keys generated backend-side,
 timezone-aware timestamps defaulting to database time, text roles with
 CHECK constraints (no enum workflow), and a partial unique index that
-allows rebooking only after cancellation.
+allows rebooking while old soft-cancelled rows remain compatible.
 
 NOTE: `migrations/versions/0001_initial.py` holds frozen, explicit copies
 of these definitions. This historical migration must never import these
-models; keep the two in sync by adding new migrations, not by editing it.
+models; never edit the initial migration. The application no longer writes
+cancelled_at; old soft-cancelled rows remain excluded from history.
 """
 
 import datetime

@@ -3,16 +3,18 @@
  * changes): expiring the session must empty the rendered bookings, not
  * leave the previous user's rows on screen for a signed-out viewer.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider, useAuth } from "../../lib/auth";
 import { resetTokenStoreForTests } from "../../lib/token_store";
+import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../lib/public_event_cache";
 import BookingsPage from "./page";
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     myBookings: vi.fn(),
     cancelBooking: vi.fn(),
+    getEvent: vi.fn(),
     login: vi.fn(),
     logout: vi.fn(),
     me: vi.fn(async () => ({ id: "u-1", email: "a@example.com", role: "user" })),
@@ -35,7 +37,6 @@ const BOOKING = {
     seats_left: 9,
   },
   created_at: "2030-01-01T10:00:01Z",
-  cancelled_at: null,
 };
 
 function ExpiryHarness() {
@@ -71,6 +72,25 @@ afterEach(() => {
   vi.useRealTimers();
   sessionStorage.clear();
   resetTokenStoreForTests();
+});
+
+beforeEach(() => {
+  if (typeof HTMLDialogElement.prototype.showModal !== "function") {
+    Object.defineProperties(HTMLDialogElement.prototype, {
+      showModal: {
+        configurable: true,
+        value(this: HTMLDialogElement) {
+          this.setAttribute("open", "");
+        },
+      },
+      close: {
+        configurable: true,
+        value(this: HTMLDialogElement) {
+          this.removeAttribute("open");
+        },
+      },
+    });
+  }
 });
 
 describe("sign-out clears bookings", () => {
@@ -127,6 +147,12 @@ let currentUser = USER_A;
 
 function bookingFor(title: string, id: string) {
   return { ...BOOKING, id, event: { ...BOOKING.event, id: `event-${id}`, title } };
+}
+
+async function clickAndConfirmCancellation() {
+  fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
 }
 
 describe("account switching scopes rows immediately", () => {
@@ -196,9 +222,127 @@ describe("cancellation feedback survives refresh", () => {
     );
     fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
     await screen.findByText("Lockable Night");
-    fireEvent.click(screen.getByText("Cancel booking"));
+    await clickAndConfirmCancellation();
     await screen.findByText(/already started/i);
     expect(screen.getByText("Lockable Night")).not.toBeNull();
+  });
+});
+
+async function renderBookingsForCancellation() {
+  currentUser = USER_A;
+  apiMock.login.mockResolvedValue({
+    access_token: "tok-A",
+    token_type: "bearer",
+    expires_at: "2030-01-01T00:00:00Z",
+    user: USER_A,
+  });
+  apiMock.me.mockResolvedValue(USER_A);
+  apiMock.myBookings.mockResolvedValue({ items: [BOOKING], total: 1 });
+  apiMock.cancelBooking.mockResolvedValue(undefined);
+  render(
+    <AuthProvider>
+      <SignInHarness />
+    </AuthProvider>,
+  );
+  fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+  await screen.findByText("Lockable Night");
+}
+
+describe("booking cancellation confirmation", () => {
+  it("invalidates cached public availability after cancellation", async () => {
+    const eventId = BOOKING.event.id;
+    invalidatePublicEventDetail(eventId);
+    apiMock.getEvent.mockResolvedValue({
+      ...BOOKING.event,
+      description: "Public event details",
+    });
+    await loadPublicEventDetail(eventId);
+    expect(getCachedPublicEventDetail(eventId)).not.toBeNull();
+
+    await renderBookingsForCancellation();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel booking" }));
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+
+    expect(getCachedPublicEventDetail(eventId)).toBeNull();
+  });
+
+  it("does not call the API before confirmation and keeps the booking on backout", async () => {
+    await renderBookingsForCancellation();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText("Are you sure you want to cancel this booking?")).not.toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Keep booking" })).toBe(document.activeElement);
+    expect(apiMock.cancelBooking).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep booking" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    expect(apiMock.cancelBooking).not.toHaveBeenCalled();
+  });
+
+  it("dismisses on Escape without changing the booking", async () => {
+    await renderBookingsForCancellation();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    const dialog = screen.getByRole("alertdialog");
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(apiMock.cancelBooking).not.toHaveBeenCalled();
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+  });
+
+  it("sends exactly one cancellation after explicit confirmation", async () => {
+    await renderBookingsForCancellation();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    const dialog = screen.getByRole("alertdialog");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
+
+    await waitFor(() => expect(apiMock.cancelBooking).toHaveBeenCalledTimes(1));
+    expect(apiMock.cancelBooking).toHaveBeenCalledWith("booking-1", "tok-A");
+    expect(apiMock.myBookings).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps same-page bookings visible while cancellation refreshes", async () => {
+    await renderBookingsForCancellation();
+    let resolveRefresh!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefresh = resolve)),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
+
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
+    expect((await screen.findByRole("status")).textContent).toMatch(/updating bookings/i);
+    expect(screen.getByText("Lockable Night")).not.toBeNull();
+    resolveRefresh({ items: [], total: 0 });
+    await screen.findByText(/no bookings yet/i);
+    expect(screen.queryByText("Lockable Night")).toBeNull();
+  });
+
+  it("prevents another cancellation while the confirmed request is pending", async () => {
+    await renderBookingsForCancellation();
+    let resolveCancellation!: () => void;
+    apiMock.cancelBooking.mockImplementation(
+      () => new Promise<void>((resolve) => void (resolveCancellation = resolve)),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel booking" }));
+
+    expect(apiMock.cancelBooking).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    const pendingButton = screen.getByRole("button", { name: /^Cancelling…$/ });
+    expect((pendingButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(pendingButton);
+    expect(apiMock.cancelBooking).toHaveBeenCalledTimes(1);
+
+    resolveCancellation();
+    await waitFor(() => expect(apiMock.myBookings).toHaveBeenCalledTimes(2));
   });
 });
 
@@ -212,10 +356,12 @@ describe("history pagination", () => {
       user: currentUser,
     }));
     apiMock.me.mockImplementation(async () => currentUser);
-    apiMock.myBookings.mockImplementation(async (_token: string, page: number) => ({
-      items: page === 1 ? [bookingFor("Page One", "p1")] : [bookingFor("Page Two", "p2")],
-      total: 25,
-    }));
+    let resolveSecondPage!: (body: { items: typeof BOOKING[]; total: number }) => void;
+    apiMock.myBookings.mockImplementation(async (_token: string, page: number) =>
+      page === 1
+        ? { items: [bookingFor("Page One", "p1")], total: 25 }
+        : new Promise((resolve) => void (resolveSecondPage = resolve)),
+    );
     render(
       <AuthProvider>
         <SignInHarness />
@@ -225,6 +371,9 @@ describe("history pagination", () => {
     await screen.findByText("Page One");
     expect(screen.getByText(/page 1 of 3/i)).not.toBeNull();
     fireEvent.click(screen.getByText("Next"));
+    expect(screen.queryByText("Page One")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/loading bookings/i);
+    resolveSecondPage({ items: [bookingFor("Page Two", "p2")], total: 25 });
     await screen.findByText("Page Two");
     expect(screen.queryByText("Page One")).toBeNull();
     expect(apiMock.myBookings).toHaveBeenLastCalledWith("tok-A", 2, 10);
@@ -258,7 +407,7 @@ describe("history pagination", () => {
       if (page === 1) return { items: [bookingFor("Page One", "p1")], total: 10 };
       return { items: [], total: 10 };
     });
-    fireEvent.click(screen.getByText("Cancel booking"));
+    await clickAndConfirmCancellation();
     await screen.findByText("Page One");
     expect(screen.queryByText("Last One")).toBeNull();
     expect(screen.getByText(/page 1 of 1/i)).not.toBeNull();
@@ -276,6 +425,31 @@ describe("cancellation racing an account switch", () => {
     });
     apiMock.me.mockResolvedValue(user);
   }
+
+  it("dismisses an old account confirmation without sending a request", async () => {
+    await signInAs(USER_A, "tok-A");
+    apiMock.myBookings.mockImplementation(async (token: string) =>
+      token === "tok-A"
+        ? { items: [bookingFor("Alpha Night", "a1")], total: 1 }
+        : { items: [bookingFor("Beta Night", "b1")], total: 1 },
+    );
+    render(
+      <AuthProvider>
+        <SwitchHarness />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+    await screen.findByText("Alpha Night");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    expect(screen.getByRole("alertdialog")).not.toBeNull();
+
+    await signInAs(USER_B, "tok-B");
+    fireEvent.click(screen.getByText("switch-account", { selector: "button" }));
+    await screen.findByText("Beta Night");
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(apiMock.cancelBooking).not.toHaveBeenCalled();
+  });
 
   it("ignores a completed cancellation after switching accounts", async () => {
     await signInAs(USER_A, "tok-A");
@@ -295,7 +469,7 @@ describe("cancellation racing an account switch", () => {
     );
     fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
     await screen.findByText("Alpha Night");
-    fireEvent.click(screen.getByText("Cancel booking"));
+    await clickAndConfirmCancellation();
     await signInAs(USER_B, "tok-B");
     fireEvent.click(screen.getByText("switch-account", { selector: "button" }));
     await screen.findByText("Beta Night");
@@ -329,7 +503,7 @@ describe("cancellation racing an account switch", () => {
     );
     fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
     await screen.findByText("Alpha Night");
-    fireEvent.click(screen.getByText("Cancel booking"));
+    await clickAndConfirmCancellation();
     await signInAs(USER_B, "tok-B");
     fireEvent.click(screen.getByText("switch-account", { selector: "button" }));
     await screen.findByText("Beta Night");
@@ -368,7 +542,7 @@ describe("cancellation racing an account switch", () => {
     await screen.findByText("Alpha Night");
     // Hold A's refetch open, then switch: A's message must not land on B.
     refetchStarted = true;
-    fireEvent.click(screen.getByText("Cancel booking"));
+    await clickAndConfirmCancellation();
     await new Promise((done) => setTimeout(done, 50));
     await signInAs(USER_B, "tok-B");
     fireEvent.click(screen.getByText("switch-account", { selector: "button" }));
@@ -448,5 +622,38 @@ describe("start-time eligibility", () => {
     const startedCancel = screen.getByRole("button", { name: "Cancel booking" });
     expect((startedCancel as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/already started; it can no longer be cancelled/i)).not.toBeNull();
+  });
+
+  it("disables confirmation if the event starts while the dialog is open", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2030-01-01T09:59:55Z"));
+    currentUser = USER_A;
+    apiMock.login.mockResolvedValue({
+      access_token: "tok-A",
+      token_type: "bearer",
+      expires_at: "2030-01-01T00:00:00Z",
+      user: USER_A,
+    });
+    apiMock.me.mockResolvedValue(USER_A);
+    apiMock.myBookings.mockResolvedValue({ items: [BOOKING], total: 1 });
+    render(
+      <AuthProvider>
+        <SignInHarness />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByText("sign-in", { selector: "button" }));
+    await screen.findByText("Lockable Night");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel booking" }));
+    const dialog = screen.getByRole("alertdialog");
+    const confirmButton = within(dialog).getByRole("button", { name: "Cancel booking" });
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
+    expect(apiMock.cancelBooking).not.toHaveBeenCalled();
+    expect(within(dialog).getByText(/event has already started/i)).not.toBeNull();
   });
 });

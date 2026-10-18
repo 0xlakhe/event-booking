@@ -1889,7 +1889,7 @@ Date: 2026-10-17
 ---
 
 ## Task: cream and charcoal frontend redesign
-Status: In progress
+Status: Yes (independent review accepted; authenticated browser limits recorded)
 Date: 2026-10-17
 
 Scope: explicitly authorized frontend implementation after the prior
@@ -1940,6 +1940,76 @@ behavior touched. Re-run: `docker compose exec -T frontend npm test -- --run`
 clean (no output). Browser inspection and the fresh independent reviewer
 are still pending, so this work remains In progress. Committed and pushed
 with the redesign docs.
+
+Completion verification (2026-10-17 NPT; supersedes the pending notes above):
+- Astra implementation agent Darwin completed all 12 frontend files and
+  reported 74 passing tests and a clean output-free typecheck. The new
+  navigation/homepage regressions were observed red before implementation.
+- Fresh independent Astra reviewer Ptolemy
+  (`01a14926-8aeb-7620-a483-e867ef67fe5b`) read the source diff and relevant
+  contracts, independently ran `docker compose exec -T frontend
+  ./node_modules/.bin/vitest run --cache=false` (9 files, 74 passed),
+  `docker compose exec -T frontend ./node_modules/.bin/tsc --noEmit
+  --incremental false` (exit 0, no output), and `git diff HEAD --check`
+  (clean). No blocking findings. Its one optional suggestion, distinct
+  accessible names for View event links, is addressed by the commit-check
+  correction above. Auth generation/readiness, token guards, recovery,
+  start-time eligibility, role routing, admin filters/disclosure, and logout
+  warnings remain unchanged in behavior.
+- Coordinator independently repeated the full 74-test suite, output-free
+  typecheck, and whitespace check after the final refinements: all passed.
+  Backend code is unchanged by this task; no backend/database tests were run.
+- `docker build --target prod -t eventbook-frontend-design-check ./frontend`
+  succeeded in an isolated image. The initial run identified an Autoprefixer
+  warning for flex `align-items: start`; changing the booking-card alignment
+  to `flex-start` removed it. The repeated build succeeded without that
+  warning, generated all 8 pages, and left the running dev `.next` untouched.
+  An unrelated `for (;;)` whitespace change was restored to its original form.
+- Coordinator visually inspected actual localhost home/cards, event detail,
+  and login at 1280px desktop, and home/detail/login/register/empty-search and
+  signed-out booking/admin states on phone views. Home grid measured two
+  550px columns at 1280px and one 350px column at 390px, with document width
+  equal to viewport width (no horizontal overflow). The additional 320px
+  homepage check also had document width 320px and clear wrapped navigation.
+  The same-page Browse events action, card detail navigation, and title search
+  were exercised without submitting auth or booking forms.
+- Visual assessment: cream/charcoal palette, readable type hierarchy, thin
+  borders, clearly differentiated primary actions, generous spacing, and
+  stacked phone forms are consistent across the inspected pages. No additional
+  visual correction was necessary. The seeded event titles remain real data;
+  no demo records were rewritten to improve screenshots.
+
+Screenshot artifacts (outside the repository):
+`/Users/prabeshshrestha/.codex/visualizations/2026/10/15/01a13dd0-78ff-7301-9b3d-0198f4f9f6b0/`
+contains `eventbook-home-desktop-top.jpg`, `eventbook-home-desktop.jpg`,
+`eventbook-cards-desktop.jpg`, `eventbook-home-mobile-top.jpg`,
+`eventbook-home-mobile.jpg`, `eventbook-home-320.jpg`,
+`eventbook-detail-desktop.jpg`, `eventbook-detail-mobile.jpg`,
+`eventbook-login-desktop.jpg`, `eventbook-login-mobile.jpg`,
+`eventbook-register-mobile.jpg`, `eventbook-empty-mobile.jpg`,
+`eventbook-bookings-signedout-mobile.jpg`, and
+`eventbook-admin-signedout-mobile.jpg`. Dimensions were checked with
+`sips -g pixelWidth -g pixelHeight`; mobile views are 390px except the
+explicit 320px homepage and signed-out admin snapshots. Temporary preview
+tabs were closed and the viewport override reset.
+
+Limits: the existing normal-user Brave session changed independently to a
+signed-out page before the final visual pass. No live authenticated bookings,
+admin list/forms, or attendee visuals are claimed. Their actual components are
+covered by the regression suite and source review; isolated HTML fixture
+rendering is not a substitute for browser verification. Browser policy blocked
+the local-file fixture preview, as recorded above. No live user sessions,
+development records, or service lifecycle were changed by this redesign task.
+Separate release work appeared in the shared tree during resumption and was
+preserved; no deployment or release completion is claimed by this entry.
+Final correction recheck: Ptolemy independently verified the event-specific
+accessible name and its regression, the flex alignment correction, and the
+behavior-neutral loop whitespace restoration. It reran all 74 frontend tests,
+the output-free typecheck, and the frontend whitespace check successfully.
+No blockers; initial review remains accepted. Its recheck did not independently
+verify the coordinator's browser screenshots or production-build output, and
+excluded the separate release documentation. Human/team-lead approval remains
+separate.
 
 ---
 
@@ -2059,3 +2129,595 @@ Review (independent, read-only subagent session
   missing). Reviewer limitations: no live Vercel/Supabase verification
   (by design); the 500-vs-503 behavior is code-derived, not executed.
 Next: stop for review. Do not deploy.
+
+## Task: TASK-007 release run — hosted Supabase database (partial)
+Status: In progress — hosted roles provisioned, migration `0001_initial`
+applied, seed applied, verified with the restricted runtime role over the
+session pooler (the path Vercel uses). Vercel environment values, the
+redeploy, and live verification are still pending; no independent review
+of this slice yet (milestone review comes with completion).
+Date: 2026-10-17
+Scope (user-authorized): bring up the hosted database for the deployed
+slice — provision the release roles and schema shell, apply migrations
+and the seed, verify readiness. No application code changed; no repo
+file holds hosted secrets.
+
+Changed:
+- `README.md`: release-order step 1 records the hosted provisioning as
+  performed (manual SQL editor path, idempotent SQL, the SET ROLE fix),
+  step 2 gains the IPv6/pooler note, Supabase confirmations recorded,
+  deployment-state block replaced.
+- `docs/IMPLEMENTATION_PLAN.md`: TASK-007 marked In progress with the
+  partial hosted-database note; the two deploy/verify checkboxes stay
+  open.
+- `docs/PROGRESS.md`: this entry.
+- Local only, ignored, never committed: `.env.release.local` (hosted
+  session-pooler URLs for both roles + release seed credentials).
+
+Findings:
+- Supabase's `postgres` is not a superuser: `CREATE SCHEMA ...
+  AUTHORIZATION <role>` (and `ALTER ... OWNER TO`) fails with
+  `42501 must be able to SET ROLE "<role>"` until `postgres` is a member
+  of the target role; `GRANT eventbook_migrator TO postgres;` fixes it.
+- The direct `db.<ref>.supabase.co` host is IPv6-only and Docker Desktop
+  containers have no IPv6 route (`Network is unreachable`); a one-off
+  `docker run --network host` borrowed the Mac's IPv6 for the first
+  migration run. The IPv4 session pooler
+  (`aws-0-ap-northeast-1.pooler.supabase.com`, found by probing the
+  public pooler hostnames) is the portable path and the one Vercel must
+  use; over it the username is `<role>.<project-ref>`.
+- Hosted PostgreSQL is 17.11 (matches local `postgres:17-alpine`).
+- `anon`/`authenticated`/`service_role` have no `eventbook` USAGE
+  (false/false/false), so the least-privilege split holds on the
+  platform.
+
+Evidence (actual runs, 2026-10-17, from this machine's `eventbook-tools`
+image against the hosted project):
+- `alembic upgrade head` → `Running upgrade -> 0001_initial`.
+- `python -m app.seed` → `users_created: 2, events_created: 13,
+  bookings_created: 1, bookings_skipped: 0`.
+- `alembic current` → `0001_initial (head)` (direct host and pooler).
+- Production readiness probe with the restricted role
+  (`get_readiness(engine, '0001_initial')` via `DATABASE_URL`) →
+  `(True, '0001_initial')` (direct host and pooler).
+- Readback as `eventbook_runtime`: `admin@example.com` (admin),
+  `user@example.com` (user); events 13; bookings 1; revision
+  `0001_initial`.
+- `psql` as `eventbook_migrator`: server PostgreSQL 17.11;
+  `has_schema_privilege('anon'|'authenticated'|'service_role',
+  'eventbook', 'USAGE')` → f/f/f.
+
+Limitations:
+- No independent reviewer on this slice yet; TASK-007 stays incomplete.
+- Role passwords are placeholders pending rotation (rotate in Supabase,
+  update the Vercel `DATABASE_URL`, redeploy).
+- Hosted provisioning is a manual SQL path; the scripted equivalent
+  remains open work.
+- Vercel project env vars are unset (operator report): the deployed
+  backend cannot start and the shipped frontend bundle falls back to
+  `http://localhost:8000/api`; the live site is unverified.
+Next: set the Vercel Production env values, redeploy (frontend rebuild
+required for `NEXT_PUBLIC_API_BASE_URL`), verify the live URL, then run
+the milestone review before claiming TASK-007 complete.
+
+## Task: detail-page Booked state from booking history
+
+Request: after booking a seat, the event-detail action should read Booked
+(not "Book one seat"), persisting across reloads and visits. User-chosen
+scope: frontend-only (no API change), no listing-card state, no
+cancel-from-detail; label only, no added copy. Label precedence:
+Booking… → Booked → Event started → Event full → Book one seat; Booked
+is disabled and suppresses the started note.
+
+Implementation:
+- `frontend/src/app/events/[id]/page.tsx`: `refreshBooked` runs on load
+  for signed-in non-admins only, reusing `findActiveBooking`; it only
+  ever sets the marker true, guarded by a scan generation and the token
+  so stale responses (previous event id, previous account, sign-out)
+  cannot mark the current screen. All scan failures keep the action
+  available (a scan 401 deliberately does not trigger the app-wide
+  expiry redirect; documented in code and design). Booked is also set by
+  a successful POST, a recovery-confirmed booking, and an ALREADY_BOOKED
+  response; the account-change reset clears the marker.
+
+Tests (`frontend/src/app/events/[id]/page.test.tsx`):
+- New "booked state from history" describe (10 tests): booked on load,
+  booked after click, cancelled stays unbooked, Booked over full, Booked
+  over started (note suppressed), ALREADY_BOOKED repair, scan 401 does
+  not expire (pins the documented choice), signed-out makes no history
+  call, account-switch reset, previous account's scan response ignored.
+- Existing recovery tests staged (flag-based mocks) so the load-time
+  scan cannot pre-empt them; the account-switch recovery test now
+  collects `myBookings` resolvers and resolves A's recovery response by
+  index (review finding — a single captured resolver had started
+  resolving the new account's own scan instead, dropping that guard's
+  coverage).
+- `afterEach` uses `vi.resetAllMocks()`: a vitest probe showed
+  `mockClear()` keeps implementations and once-queues, so a failed
+  test's queued rejection could leak into a later test (it did, in the
+  red phase).
+
+Independent review (fresh reviewer subagent, OpenCode `general` agent,
+child session `ses_eb2f7cb9dffeS3b9rHjwRAeDKK`, read-only; builder-
+reported implementation; reviewer evidence separately reproduced):
+- Round 1: 1 MAJOR (the account-switch recovery test no longer delivered
+  its stale response — probe showed the recovery guard could be deleted
+  without failing the suite) and 3 MINOR (scan 401 swallowed; no live
+  announcement of the derived label; coverage gaps incl. other-tab
+  cancellation leaving a stale Booked until reload). No BLOCKING.
+- Corrections: MAJOR — test restaged to resolve `historyResolvers[1]`;
+  builder mutation check (guard removed → test fails with the stale
+  "nothing was booked" alert; restored → green), independently
+  reproduced by the reviewer. MINOR 1 — kept deliberately, documented in
+  code + `docs/TECHNICAL_DESIGN.md`, pinned by a new test; reviewer
+  mutation (expire on scan 401 → test fails) confirmed the pin. MINOR
+  2/3 — accepted suggestions/limitations below; no code change.
+- Round 2 recheck: no BLOCKING/MAJOR remaining; reviewer independently
+  reran the suite and both mutation probes.
+
+Evidence (actual runs, 2026-10-18, host + container):
+- `npx vitest run` (frontend/) → 9 files, 84 passed (red first: the 11
+  intended failures before the `page.tsx` change).
+- `npx vitest run src/app/events --sequence.shuffle` → 20 passed.
+- `npm run typecheck` → clean. Reviewer reran all three independently
+  (84 / 20 / clean).
+- `docker compose exec -T frontend npm test -- --run` → 84 passed.
+- Browser pass (local stack, `user@example.com`): Seed Event 03 (0/2
+  full, already booked) shows disabled Booked on load (Booked beats
+  full); Seed Event 04 Book one seat → Booked (48/50) → full reload
+  still Booked → cancelled from /bookings → reload shows Book one seat
+  and 49/50. Local demo state left as found (only Event 03 booked).
+  Screenshots in `.openchamber/screenshots/` (booked-beats-full,
+  booked-after-reload).
+
+Docs: `docs/REQUIREMENTS.md` robustness clause (d) added;
+`docs/TECHNICAL_DESIGN.md` booking paragraph extended.
+
+Limitations / accepted suggestions:
+- Load-time derivation only: a cancellation in another tab leaves a
+  stale disabled Booked until the next load/navigation (no realtime;
+  outside scope).
+- No live-region announcement for the load-derived Booked label (matches
+  the pre-existing started/full treatment; user chose label only).
+- Coverage gaps accepted: sign-out mid-scan and scan-after-POST paths
+  were traced correct but are not separately tested.
+- Not yet committed: the tree also holds the earlier uncommitted
+  release-run docs and the pre-existing `for (;;)`/`globals.css` edits;
+  commit waits with those until the live release verification.
+
+## Booking cancellation hard-delete follow-up
+
+Scope: replace new booking cancellation's soft-delete behavior with a
+hard-delete, while preserving the legacy `cancelled_at` column and frozen
+`0001_initial` migration. No unrelated booking, event, deployment, or
+database cleanup work is authorized here.
+
+Implementation:
+- `backend/app/bookings.py`: delete the owned future booking in the
+  existing event-first READ COMMITTED transaction; current history and
+  counts omit legacy soft-cancelled rows; repeats and legacy rows return
+  the same 404. Response no longer includes `cancelled_at`.
+- `backend/migrations/versions/0002_booking_hard_delete.py`: grant
+  runtime DELETE and revoke UPDATE on legacy `cancelled_at`; downgrade
+  restores the prior grants. `0001_initial` and its schema remain intact.
+- Frontend booking history presents only current bookings; typed booking
+  response and detail-page matching no longer depend on cancellation
+  status. Regression coverage includes rebooking, repeat/legacy 404,
+  non-owner/admin restrictions, privilege boundaries, and a start-time
+  crossing while cancellation waits on the event lock.
+- README and design/plan docs explain legacy-row behavior, release
+  migration requirements, and the pending hosted migration. No migration
+  was applied and no production/development database or seed data was
+  changed.
+
+Verification (2026-10-18, NPT):
+- Frontend focused: `cd frontend && ./node_modules/.bin/vitest run
+  src/app/bookings/page.test.tsx 'src/app/events/[id]/page.test.tsx'` →
+  2 files, 31 passed.
+- Full frontend: `cd frontend && npm test -- --run` → 9 files, 84 passed.
+- Frontend typecheck: `cd frontend && npm run typecheck` → clean.
+- Full backend: `docker compose --profile tools run --rm tools pytest -q`
+  → 110 passed, one Starlette/AnyIO deprecation warning, isolated
+  `eventbook_test` target only.
+- The concurrency regression now observes an ungranted PostgreSQL lock
+  in `pg_locks` before it lets the start time cross, so the test proves
+  the request was waiting on the event lock. `pg_stat_activity` did not
+  expose the other role's session to the test migrator; that initial
+  probe was discarded. The lock-synchronized focused regression passed
+  (1 passed), followed by the full 110-test green run above.
+Independent review: fresh read-only reviewer reported no blocking
+findings. Two minor findings were corrected: the cancellation test now
+confirms an ungranted PostgreSQL lock before waiting across the event
+start, and migration 0002 validates the runtime-role identifier using
+the same rule as 0001. Reviewer recheck confirmed both corrections with
+no blocking findings and no database operations. This does not change
+the TASK-007 release checkpoint: hosted database remains at the reported
+`0001_initial`, source expects `0002_booking_hard_delete`, and no hosted
+migration or deployment was performed. Keep the release incomplete until
+explicitly authorized and live readiness is verified.
+
+## Authorized local migration: booking hard-delete privilege
+
+Authorization: user explicitly requested applying the new migration to
+the local Docker Compose PostgreSQL only. Target was confirmed before
+mutation from the tools connection as host `db`, database
+`eventbook_dev`, server address `172.21.0.2/32`, and current revision
+`0001_initial`; this was the Compose `postgres:17-alpine` service, not a
+Supabase or remote endpoint. Pre-migration counts: 34 bookings, 13
+events, 3 users.
+
+Actions and verification (2026-10-18, NPT):
+- Updated ignored local `.env` `EXPECTED_ALEMBIC_REVISION` from
+  `0001_initial` to `0002_booking_hard_delete`; no credentials were read
+  into output or changed.
+- `docker compose --profile tools run --rm tools alembic upgrade head`
+  → Alembic applied only `0001_initial -> 0002_booking_hard_delete`.
+  No seed, reset, downgrade, cleanup, or volume operation was run.
+- `docker compose up -d backend` → recreated only the local backend
+  container (no build); database and frontend were left running.
+- Read-only post-check through the migration connection confirmed target
+  `db/eventbook_dev`, revision `0002_booking_hard_delete`, runtime
+  `DELETE` privilege true, and `UPDATE(cancelled_at)` privilege false.
+  Counts remain 34 bookings, 13 events, 3 users: no records changed.
+- `curl -sS -i http://localhost:8000/health` → HTTP 200 with
+  `{"status":"ok","database":"connected","schema":"ready"}`.
+- `curl -sS -o /dev/null -w ... http://localhost:3000/` → HTTP 200.
+  `docker compose ps` reports backend, db, and frontend running/healthy.
+
+No production/Supabase database, deployment, or seed data was touched.
+
+## Booking cancellation confirmation dialog
+
+Scope: before a user cancellation, request confirmation with “Are you
+sure you want to cancel this booking?” The user can keep or cancel the
+booking; dismissal/escape sends no request. No backend, migration,
+deployment, or booking-data changes are part of this UI task.
+
+Implementation:
+- `frontend/src/app/bookings/page.tsx` uses a native modal `<dialog>`
+  with `role="alertdialog"`, explicit label/description, Escape/backout
+  handling, and safe initial focus on “Keep booking”. It captures the
+  account token/owner when opening and verifies both again before sending
+  the request; account changes dismiss stale confirmation. Existing
+  pending, API error, 401, post-success refetch, and pagination handling
+  remain in place. If the event starts while confirmation is open, the
+  confirm action disables with the existing explanation; the handler
+  also checks the browser clock immediately before submitting.
+- `frontend/src/app/bookings/page.test.tsx` covers no request before
+  confirmation, Keep and Escape dismissal, safe initial focus, exactly
+  one request after confirmation, pending duplicate prevention, account
+  change before confirmation, start-time crossing while the dialog is
+  open, and prior in-flight stale-session/error behavior after updating
+  those tests to explicitly confirm.
+- `frontend/src/app/globals.css` styles the native dialog/backdrop using
+  the existing visual tokens.
+
+Verification (2026-10-18, NPT):
+- TDD red phase: new confirmation cases failed because the existing page
+  had no dialog and sent cancellation directly. The event-start-while-
+  open regression also failed before its guard was added.
+- `cd frontend && npm test -- --run` → 9 files, 90 passed.
+- `cd frontend && npm run typecheck` → clean.
+- `git diff --check` → clean.
+- No backend or database commands were run; no development/production
+  bookings, migrations, deployments, or seed data were changed for this
+  UI task.
+
+## TASK-008 retained-content loading refresh
+
+Scope: retain displayed collection/detail content during same-context
+refreshes, while identifying updating state; prevent prior query/page/route/
+account results from being represented as current. Initial loads continue to
+use loading placeholders. No backend, database, deployment, or data changes.
+
+Implementation:
+- Public list content is keyed by query/page; detail content and errors are
+  keyed by event ID; own bookings are keyed by account/page; admin list data
+  and list errors are keyed by account/query/time filter/page. Context changes
+  hide stale items and totals immediately. Existing request/session guards are
+  preserved and admin responses also verify the captured token and account.
+- Same-context refreshes keep content visible with an accessible compact
+  “Updating …” status. Availability labels report “Updating availability…”
+  during refresh rather than presenting potentially stale seat counts as
+  current. Collection regions expose `aria-busy` while refreshing.
+- Added regressions for delayed updates and stale context changes across the
+  public list, detail, bookings, and admin screens. Existing action, retry,
+  auth, pagination, and error tests remain in the suite. The UI refresh
+  contract is documented in `docs/TECHNICAL_DESIGN.md`.
+
+Verification (2026-10-18, NPT):
+- TDD RED: initial focused run failed the new stale-context/updating-state
+  expectations (9 failures); implementation then passed the focused suite.
+- `cd frontend && npm test -- --run` → 9 files, 98 passed.
+- `cd frontend && npm run typecheck` → clean.
+- `git diff --check` → clean.
+- Fresh independent reviewer Russell: no blocking findings. The read-only
+  review identified two minor context-state issues: the detail booked marker
+  survived event-ID changes, and attendee data/requests survived admin account
+  changes. Fixed both and added regressions (route change after a booked event;
+  delayed attendee response after admin account switch). Reviewer rechecked
+  current code and ran `cd frontend && ./node_modules/.bin/vitest run
+  'src/app/events/[id]/page.test.tsx' src/app/admin/page.test.tsx` → 2 files,
+  36 tests passed; confirmed both corrections and no blocking findings.
+- Final `cd frontend && npm test -- --run` → 9 files, 99 passed;
+  `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- No backend/DB tests, database access, deployment, or data changes were
+  performed for this UI task. This does not change TASK-008/TASK-009 release
+  or human approval checkpoints.
+
+## TASK-008 event-detail initial loading placeholder
+
+Scope: replace the event detail's brief whole-page “Loading event…” state
+and its Suspense fallback with one shared, layout-matching skeleton. Keep
+old route content hidden, expose an accessible announcement, and render no
+fake booking controls. No backend, database, deployment, or data changes.
+
+Implementation:
+- `frontend/src/app/events/[id]/page.tsx` uses the same loading component
+  for Suspense and initial/context-transition loads. It preserves detail-grid
+  geometry with representative back-link, heading, five description lines,
+  metadata, and booking-panel/action-space shapes. Decorative skeleton content
+  is `aria-hidden`; a separate screen-reader-only `role=status` announces the
+  load. It is static (no animation) and exposes `aria-busy` on the skeleton.
+- `frontend/src/app/globals.css` styles the placeholder using the existing
+  cream/charcoal tokens and responsive detail-grid rules; no controls or seat
+  availability claims are displayed before data arrives.
+- `frontend/src/app/events/[id]/page.test.tsx` verifies delayed initial-load
+  announcement, hidden decorative geometry, represented layout regions, and
+  absence of booking actions; the route-change test verifies prior event
+  content stays hidden during the transition.
+- `docs/TECHNICAL_DESIGN.md` records this detail loading contract.
+
+Verification (2026-10-18, NPT):
+- TDD RED: focused event-detail test run initially failed because both paths
+  still announced “Loading event…” and provided no skeleton.
+- `cd frontend && ./node_modules/.bin/vitest run
+  'src/app/events/[id]/page.test.tsx'` → 24 passed.
+- `cd frontend && npm test -- --run` → 9 files, 100 passed.
+- `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Visual inspection was not performed: localhost frontend (`:3000`) and API
+  (`:8000`) were not running, and this scope does not authorize starting or
+  building an app in the live dev container. Browser access existed but had
+  no open app tab.
+- Fresh independent reviewer Ramanujan: accepted with no blocking or minor
+  findings. Reviewer independently ran
+  `cd frontend && ./node_modules/.bin/vitest run 'src/app/events/[id]/page.test.tsx'`
+  → 1 file, 24 passed; review was read-only and performed no database,
+  deployment, data, or build work.
+
+## TASK-008 public detail prefetch and list return context
+
+Scope: reduce the initial detail skeleton flash for common list navigation
+with intent-based public-data prefetch/reuse, and restore the exact originating
+public-list URL and scroll after returning from detail. Preserve direct-entry
+fallback, stale-context safety, fresh availability checks, backend authority,
+and account privacy. No backend, migration, deployment, or data changes.
+
+Implementation:
+- `frontend/src/lib/public_event_cache.ts` provides an in-memory public detail
+  cache with LRU bound 20, TTL 90 seconds, in-flight deduplication, and at most
+  three simultaneous intent prefetches. Failures are quiet; detail-route loads
+  still fetch fresh data. Cached descriptions can render immediately while
+  seat availability and time eligibility are marked updating and booking stays
+  disabled until the fresh response succeeds. Booking/cancellation/admin edit
+  and deletion invalidate the affected entry. No tokens or private booking
+  ownership data enter this cache.
+- `frontend/src/lib/event_list_navigation.ts` keeps one 30-minute, same-tab
+  origin with event ID, validated public-list URL, scroll position, and one
+  bounded page of public summary data. Public
+  list event links record that context and prefetch on focus, hover, or touch,
+  not for every visible card. Matching “Back to events” uses browser Back;
+  direct-entry or mismatched detail falls back to `/`. On return, a layout
+  effect restores the matching snapshot as updating content and scrolls after
+  its DOM commits, before first paint; the list API request proceeds normally.
+  Expired/mismatched origins do not restore content or scroll. Browser history
+  remains responsible for its own Back/Forward URL traversal.
+- Booking, cancellation, and admin edit/delete paths invalidate relevant
+  public detail; list and detail fetch/session guards remain active.
+- Tests cover intent dedupe/cap, quiet failures, cached-detail reuse while
+  fresh availability loads, cache TTL/size/invalidation, mutation invalidation,
+  exact query/page return URL, snapshot rows and scroll in the first return
+  commit while the fresh list request is held open, and direct-entry fallback.
+- `docs/TECHNICAL_DESIGN.md` documents cache and origin limits/contracts.
+
+Verification (2026-10-18, NPT):
+- TDD RED: initial new listing regressions failed because hover/focus did not
+  prefetch and Back used `/` instead of the originating query/page URL. A
+  subsequent test-harness assertion also exposed that booking controls are
+  intentionally absent for visitors; the cache reuse case was corrected to
+  exercise a restored normal-user session.
+- TDD RED for the return flash: the new return-flow test failed because
+  “Page Two” was absent while the list API request was held open; this captured
+  the visible top/loading state before restoration rather than only asserting
+  a later `scrollTo` call. The snapshot/layout-phase fix passed it.
+- Focused affected suite → 5 files, 75 tests passed.
+- `cd frontend && npm test -- --run` → 10 files, 109 passed.
+- `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Browser inspection was not performed: local frontend/API were unavailable
+  on `localhost:3000`/`:8000`, and no app tab was open. No app was started and
+  no production build was run in the live dev container.
+- Fresh independent reviewer Averroes initially found one P2: route loads
+  could join an in-flight hover/focus prefetch and mistakenly treat its
+  potentially stale availability as fresh. Corrected by detaching that
+  prefetch and starting a distinct route-load request; late prefetch responses
+  cannot overwrite its cache. Added a cache-level race regression and a UI
+  navigation-before-prefetch-completes regression. Also moved booking cache
+  invalidation before the stale-session UI guard and tested that global public
+  availability is invalidated after an old session's successful POST.
+- Reviewer recheck confirmed the P2 resolved and found no new blockers. It ran
+  `cd frontend && ./node_modules/.bin/vitest run src/lib/public_event_cache.test.ts src/app/page.test.tsx 'src/app/events/[id]/page.test.tsx' src/app/bookings/page.test.tsx`
+  → 4 files, 64 passed. Review was read-only;
+  no database, build, deployment, or data operations.
+- Added origin-helper regressions for exact query/hash matching and rejection
+  of external, protocol-relative, and non-list return URLs.
+- Final `cd frontend && npm test -- --run` → 11 files, 114 passed;
+  `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+
+Independent fresh reviewer reported no findings and independently ran
+`./node_modules/.bin/vitest run src/app/bookings/page.test.tsx` → 17
+passed. The reviewer rechecked the event-start guard and reported no new
+findings; that recheck was read-only and did not rerun tests. Reviewer did
+not access database or booking data. Preserve existing review/release
+checkpoints; this focused UI change does not alter TASK-007 status.
+
+## TASK-008 return-scroll first-paint correction
+
+Scope: prevent the list from visibly painting at the top before its saved
+scroll restoration. Preserve its originating URL/query/page, bounded public
+snapshot, fresh availability/list checks, and normal navigation behavior.
+
+Diagnosis and implementation:
+- The previous restoration waited for the network-backed `hasCurrentResults`
+  condition and then scheduled two animation frames. The browser could paint
+  the top/loading list while those requests/frames were pending, before the
+  eventual `scrollTo`.
+- The originating list context now includes at most one page (10 public event
+  summaries and total). A matching return uses an isomorphic layout-phase
+  effect to commit the snapshot as an explicitly updating list and restore its
+  scroll before first paint. It forces the new DOM layout before scrolling;
+  the normal list request still proceeds and replaces the snapshot. Stale
+  availability remains labeled as updating and paging stays guarded.
+- No snapshot/scroll restoration occurs for expired or mismatched origins;
+  new navigation retains normal scrolling. No page-wide hidden state or global
+  scroll suppression was added. Browser history still owns Back/Forward URLs.
+- `frontend/src/app/page.test.tsx` holds the list request open and asserts the
+  saved row, updating status, and scroll position are present immediately on
+  return, before resolving that request; it also asserts the eventual fresh
+  result does not cause a second scroll.
+- `docs/TECHNICAL_DESIGN.md` records the first-paint snapshot/restore contract.
+
+Verification (2026-10-18, NPT):
+- TDD RED: the return-flow regression failed because the saved “Page Two” row
+  was absent while the list API request remained pending.
+- `cd frontend && npm test -- --run` → 11 files, 115 passed.
+- `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Browser check was unavailable: both `localhost:3000` and `localhost:8000`
+  refused connections. No services were started, and no production build,
+  backend, database, deployment, or data operations were performed.
+- Fresh independent reviewer Aquinas (`01a14e12-b55c-74d2-9a22-7afb8d9523b9`)
+  initially found two P2s: an origin could replay on a later same-URL visit,
+  and a failed refresh could display snapshot seat counts as current. The
+  implementation now consumes only the exact restored origin after its
+  successful layout-phase scroll and labels availability unavailable after
+  refresh failure. Added regressions for later same-URL visits, exact-origin
+  consumption, and refresh-failure availability.
+- After corrections, `cd frontend && npm test -- --run` → 11 files, 117
+  passed; `cd frontend && npm run typecheck` → clean; `git diff --check` →
+  clean. The new tests verify a later same-URL visit has no replayed snapshot
+  or second scroll, refresh failure reports availability unavailable, and
+  consuming an old origin cannot clear a newer one.
+- Independent reviewer Aquinas rechecked the changed source and regressions;
+  both prior P2 findings are resolved, with no blocking findings. It ran
+  `cd frontend && ./node_modules/.bin/vitest run src/app/page.test.tsx
+  src/lib/event_list_navigation.test.ts` → 2 files, 21 passed. Review was
+  read-only with no browser, build, backend, database, deployment, or data
+  operations. Its minor note was a jsdom `scrollTo` warning in the new failure
+  test; the test now stubs that browser API and the focused suite was rerun.
+- Final validation after that test cleanup: `cd frontend && npm test -- --run`
+  → 11 files, 117 passed; `cd frontend && npm run typecheck` → clean;
+  `git diff --check` → clean. Rechecked `localhost:3000` and `localhost:8000`;
+  both refused connections. No services were started.
+
+## TASK-008 click-to-detail transition continuity
+
+Scope: keep the public list visible until a clicked event's public detail
+payload is ready, then navigate once to the detail route. Preserve anchor
+semantics, list-origin capture, query/page guards, bounded public caching, and
+fresh availability/booking checks.
+
+Implementation:
+- Ordinary same-tab event-link activations are held on the list while the
+  existing public detail loader resolves. The clicked link exposes a small
+  accessible opening status; repeated activation of the same event is ignored.
+  The list URL, scroll position, and bounded current-page snapshot are captured
+  only immediately before the successful `router.push`.
+- Failed loads leave the list visible with a retryable alert. A changed query
+  or page, another destination, or unmount invalidates the pending navigation;
+  stale completion cannot push a route. Modified clicks, downloads, and
+  non-self targets retain native link behavior.
+- The detail route initializes from an existing bounded public detail-cache
+  entry, so cached descriptions appear on the first detail render. Cached seats
+  remain explicitly updating and booking stays disabled until the detail
+  route's own fresh response succeeds. Direct detail entry retains its normal
+  skeleton and error flow. No private/session data enters the public cache.
+- Tests cover delayed response/list continuity, one navigation on repeated
+  click, origin capture at actual navigation, stale response after a query
+  change, retry after failure, modified/new-tab semantics, and cached detail
+  in the first render with fresh availability still pending.
+- `docs/TECHNICAL_DESIGN.md` records the selected transition contract.
+
+Verification (2026-10-18, NPT):
+- TDD RED: the new click regressions failed before implementation because no
+  opening status appeared, no detail fetch/retry flow was held on the list,
+  and cached public detail was absent from the initial detail render.
+- Reviewer Hume (`01a14e27-5a21-7881-b172-4795947e958d`) initially found a
+  P2: a pending detail response could override the homepage's `#events`
+  destination because only query/page state was checked. Added a regression;
+  before correction it failed because the response still pushed the detail
+  route. The home link now cancels pending detail navigation synchronously,
+  and the delayed completion also verifies the exact path, query, and hash
+  before capturing origin or navigating.
+- `cd frontend && npm test -- --run` → 11 files, 122 passed.
+- `cd frontend && npm run typecheck` → clean; `git diff --check` → clean.
+- Browser verification unavailable: `localhost:3000` and `localhost:8000`
+  refused connections (HTTP 000 / connection refused). No service was started;
+  no production build, backend, database, deployment, or data operation was
+  performed.
+- Reviewer Hume rechecked after correction and found no blocking findings.
+  It ran `cd frontend && ./node_modules/.bin/vitest run src/app/page.test.tsx
+  'src/app/events/[id]/page.test.tsx' src/lib/public_event_cache.test.ts
+  src/lib/event_list_navigation.test.ts` → 4 files, 55 passed; `git diff
+  --check` was clean. Review was read-only with no browser/service/build or
+  backend/database/deployment/data operations. The full frontend suite and
+  typecheck were rerun after the correction and passed as recorded above.
+
+## TASK-008 cached-detail refresh layout correction
+
+Scope: eliminate the extra top-of-detail status row during a cached detail's
+fresh availability request, without presenting cached availability as fresh
+or enabling booking before the route's own response.
+
+Diagnosis and correction:
+- Local browser confirmed the click handler holds the list and shows
+  “Opening event…” while the detail request is delayed. After a same-tab click
+  on localhost, the settled route showed the expected detail. The browser
+  automation did not capture the individual frame at the route commit; it
+  waits for AX state and cannot establish whether a transient full-screen
+  flash occurs in the user's local repro.
+- Source and a new controlled cached-detail regression identified the
+  post-commit revalidation presentation: cached description renders, but a
+  top-level “Updating event…” paragraph is inserted while the route's fresh
+  GET is pending and removed on completion. This shifts the detail grid. The
+  status now lives in the existing availability value; that value remains
+  “Updating availability…” and the booking action remains disabled until the
+  fresh route GET succeeds. The same stable layout applies to the refresh
+  after a booking response; no real booking was submitted.
+- Regression first failed because the top-level status was present; after the
+  change it verifies cached description, status within the availability row,
+  pending availability text, and disabled booking, then resolves the fresh
+  response before clearing the cache.
+
+Verification (2026-10-18, NPT):
+- `cd frontend && npm test -- --run 'src/app/events/[id]/page.test.tsx'`
+  → 1 file, 26 passed.
+- `cd frontend && npm test -- --run` → 11 files, 123 passed.
+- `cd frontend && npm run typecheck` → clean.
+- `docker compose ps` → permission denied connecting to the local Docker
+  socket; no attempt to bypass access. The visible browser page is
+  `http://localhost:3000/`; no database, booking, session, deployment, or
+  production build operation was performed. Browser source/build provenance
+  remains unverified.
+- Fresh independent reviewer Godel found no blockers. Initial minor note:
+  assistive technology may defer a status nested inside `aria-busy`. The
+  status is now visually hidden outside that region, while the visible
+  availability cell still reports the pending state. Godel rechecked the
+  correction and found the note resolved with no blockers; it independently
+  ran `npm test -- --run 'src/app/events/[id]/page.test.tsx'
+  'src/app/page.test.tsx'` → 2 files, 48 passed. Godel did not rerun the full
+  suite or typecheck; those builder runs above passed. Review was read-only.
+- Browser inspection established localhost routing and final detail content,
+  but did not capture frame-by-frame geometry at route commit; no browser
+  measurement is claimed. This fix targets the demonstrated cached-refresh
+  banner insertion from source and regression coverage, not a conclusively
+  captured full-screen blank/reload. No deployment or release checkpoint is
+  changed by this UI correction.

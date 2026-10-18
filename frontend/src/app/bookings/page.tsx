@@ -6,6 +6,7 @@ import { ApiRequestError, api, type Booking } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { hasStarted, useNow } from "../../lib/clock";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
+import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
 
 const PAGE_SIZE = 10;
 
@@ -36,15 +37,36 @@ export default function BookingsPage() {
   const [total, setTotal] = useState(0);
   const [state, setState] = useState<"pending" | "ready" | "error" | "empty">("pending");
   const [failure, setFailure] = useState<string | null>(null);
+  const [failureKey, setFailureKey] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    booking: Booking;
+    token: string;
+    ownerId: string;
+  } | null>(null);
+  const confirmationDialog = useRef<HTMLDialogElement | null>(null);
+  const keepBookingButton = useRef<HTMLButtonElement | null>(null);
   const requestId = useRef(0);
 
   useEffect(() => {
+    if (confirmationDialog.current?.open) confirmationDialog.current.close();
+    setConfirmation(null);
     setItems([]);
     setLoadedFor(null);
     setPendingId(null);
     setPage(1);
   }, [userId]);
+
+  useEffect(() => {
+    const dialog = confirmationDialog.current;
+    if (dialog === null) return;
+    if (confirmation === null || confirmation.ownerId !== userId) {
+      if (dialog.open) dialog.close();
+      return;
+    }
+    if (!dialog.open) dialog.showModal();
+    keepBookingButton.current?.focus();
+  }, [confirmation, userId]);
 
   const load = useCallback(
     async (keepFailure = false) => {
@@ -61,7 +83,9 @@ export default function BookingsPage() {
       }
       const id = ++requestId.current;
       const owner = userId;
+      const key = JSON.stringify([owner, page]);
       setState("pending");
+      setFailureKey(null);
       if (!keepFailure) setFailure(null);
       try {
         const body = await api.myBookings(token, page, PAGE_SIZE);
@@ -74,7 +98,7 @@ export default function BookingsPage() {
         }
         setItems(body.items);
         setTotal(body.total);
-        setLoadedFor(owner);
+        setLoadedFor(JSON.stringify([owner, page]));
         setState(body.items.length === 0 ? "empty" : "ready");
       } catch (err: unknown) {
         if (requestId.current !== id || getToken() !== token) return;
@@ -87,6 +111,7 @@ export default function BookingsPage() {
         }
         setState("error");
         setFailure(err instanceof ApiRequestError ? err.message : "Could not load bookings.");
+        setFailureKey(key);
       }
     },
     [getToken, markSessionExpired, page, userId],
@@ -97,13 +122,31 @@ export default function BookingsPage() {
     else if (ready && isAdmin) setState("empty");
   }, [ready, load, isAdmin]);
 
-  async function cancel(booking: Booking) {
+  function dismissConfirmation() {
+    if (confirmationDialog.current?.open) confirmationDialog.current.close();
+    setConfirmation(null);
+  }
+
+  function requestCancellation(booking: Booking) {
     const token = getToken();
-    if (token === null) return;
-    if (pendingId !== null) return;
+    if (token === null || userId === null || pendingId !== null || confirmation !== null) return;
+    setConfirmation({ booking, token, ownerId: userId });
+  }
+
+  async function cancelConfirmed() {
+    const request = confirmation;
+    if (request === null || pendingId !== null) return;
+    if (getToken() !== request.token || userId !== request.ownerId) {
+      dismissConfirmation();
+      return;
+    }
+    if (hasStarted(request.booking.event.starts_at, Date.now())) return;
+    const { booking, token } = request;
     setPendingId(booking.id);
+    dismissConfirmation();
     try {
       await api.cancelBooking(booking.id, token);
+      invalidatePublicEventDetail(booking.event.id);
       // The account may have switched mid-flight: only the current
       // account's screen may refresh or show feedback. The new account's
       // own load (triggered by the switch) already covers its rows.
@@ -135,8 +178,13 @@ export default function BookingsPage() {
     }
   }
 
-  const visible = loadedFor === userId ? items : [];
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentKey = userId === null ? null : JSON.stringify([userId, page]);
+  const hasCurrentBookings = currentKey !== null && loadedFor === currentKey;
+  const visible = hasCurrentBookings ? items : [];
+  const visibleTotal = hasCurrentBookings ? total : 0;
+  const pages = Math.max(1, Math.ceil(visibleTotal / PAGE_SIZE));
+  const confirmationStarted =
+    confirmation !== null && hasStarted(confirmation.booking.event.starts_at, now);
 
   return (
     <main>
@@ -163,8 +211,8 @@ export default function BookingsPage() {
           <Link href="/admin">admin panel</Link>.
         </p>
       )}
-      {state === "pending" && <p className="empty-state" role="status">Loading bookings…</p>}
-      {state === "error" && (
+      {state === "pending" && <p className={hasCurrentBookings ? "refresh-status" : "empty-state"} role="status">{hasCurrentBookings ? "Updating bookings…" : "Loading bookings…"}</p>}
+      {state === "error" && failureKey === currentKey && (
         <p role="alert">
           {failure}{" "}
           <button type="button" onClick={() => void load()}>
@@ -172,17 +220,16 @@ export default function BookingsPage() {
           </button>
         </p>
       )}
-      {state === "empty" && !isAdmin && user !== null && visible.length === 0 && total === 0 && (
+      {state === "empty" && hasCurrentBookings && !isAdmin && user !== null && visible.length === 0 && visibleTotal === 0 && (
         <p className="empty-state">No bookings yet. Browse events to book a seat.</p>
       )}
       {visible.length > 0 && (
         <>
-          <ul className="booking-list">
+          <ul className="booking-list" aria-busy={state === "pending"}>
             {visible.map((booking) => {
-              const cancelled = booking.cancelled_at !== null;
               const started = hasStarted(booking.event.starts_at, now);
               return (
-                <li key={booking.id} className={`card${cancelled ? " booking-cancelled" : ""}`}>
+                <li key={booking.id} className="card">
                   <div className="booking-info">
                     <h2>
                       <Link href={`/events/${booking.event.id}`}>
@@ -193,31 +240,29 @@ export default function BookingsPage() {
                       <time dateTime={booking.event.starts_at} title={NEPAL_LABEL}>{formatNepal(booking.event.starts_at)}</time>
                     </p>
                     <p className="muted">{booking.event.venue}</p>
-                    <span className="status-label">{cancelled ? "Cancelled" : "Booked"}</span>
+                    <span className="status-label">Booked</span>
                   </div>
-                  {!cancelled && (
-                    <div className="booking-actions">
-                      <button
-                        type="button"
-                        disabled={pendingId !== null || started}
-                        onClick={() => void cancel(booking)}
-                      >
-                        {pendingId === booking.id ? "Cancelling…" : "Cancel booking"}
-                      </button>
-                      {started && (
-                        <p className="muted">
-                          {" "}This event has already started; it can no longer be cancelled.
-                        </p>
-                      )}
-                    </div>
-                  )}
+                  <div className="booking-actions">
+                    <button
+                      type="button"
+                      disabled={pendingId !== null || started}
+                      onClick={() => requestCancellation(booking)}
+                    >
+                      {pendingId === booking.id ? "Cancelling…" : "Cancel booking"}
+                    </button>
+                    {started && (
+                      <p className="muted">
+                        This event has already started; it can no longer be cancelled.
+                      </p>
+                    )}
+                  </div>
                 </li>
               );
             })}
           </ul>
           <div className="pagination">
             <p className="muted">
-              Page {page} of {pages} ({total} bookings)
+              Page {page} of {pages} ({visibleTotal} bookings)
             </p>
             {pages > 1 && (
               <p className="button-row">
@@ -232,7 +277,7 @@ export default function BookingsPage() {
           </div>
         </>
       )}
-      {visible.length === 0 && pages > 1 && (
+      {hasCurrentBookings && visible.length === 0 && pages > 1 && (
         <p>
           <button type="button" onClick={() => setPage(1)}>
             Back to first page
@@ -240,6 +285,51 @@ export default function BookingsPage() {
         </p>
       )}
       {failure !== null && state !== "error" && <p role="alert">{failure}</p>}
+      {confirmation !== null && (
+        <dialog
+          ref={confirmationDialog}
+          className="confirmation-dialog"
+          role="alertdialog"
+          aria-labelledby="cancel-booking-title"
+          aria-describedby="cancel-booking-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            dismissConfirmation();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              dismissConfirmation();
+            }
+          }}
+        >
+          <h2 id="cancel-booking-title">Cancel booking?</h2>
+          <p id="cancel-booking-description">
+            Are you sure you want to cancel this booking?
+          </p>
+          <div className="button-row">
+            {confirmationStarted && (
+              <p className="muted">
+                This event has already started; it can no longer be cancelled.
+              </p>
+            )}
+            <button
+              ref={keepBookingButton}
+              type="button"
+              onClick={dismissConfirmation}
+            >
+              Keep booking
+            </button>
+            <button
+              type="button"
+              disabled={pendingId !== null || confirmationStarted}
+              onClick={() => void cancelConfirmed()}
+            >
+              Cancel booking
+            </button>
+          </div>
+        </dialog>
+      )}
       <p className="timezone-note">All times shown in {NEPAL_LABEL}.</p>
       <p className="return-link">
         <Link href="/">Back to events</Link>

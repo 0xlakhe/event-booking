@@ -81,7 +81,6 @@ export interface Booking {
   id: string;
   event: EventSummary;
   created_at: string;
-  cancelled_at: string | null;
 }
 
 export interface AttendeeUser {

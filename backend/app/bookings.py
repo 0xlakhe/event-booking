@@ -34,7 +34,6 @@ class BookingPublic(BaseModel):
     id: uuid.UUID
     event: EventSummary
     created_at: str
-    cancelled_at: str | None
 
 
 def _timeouts(conn: Connection) -> None:
@@ -89,7 +88,6 @@ def _to_booking(row) -> dict:  # type: ignore[no-untyped-def]
             seats_left=row["seats_left"],
         ),
         created_at=utc_z(row["created_at"]),
-        cancelled_at=utc_z(row["cancelled_at"]) if row["cancelled_at"] else None,
     ).model_dump(mode="json")
 
 
@@ -151,7 +149,7 @@ def book_seat(engine: Engine, actor: UserActor, event_id: uuid.UUID) -> dict:
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT b.id, b.created_at, b.cancelled_at, "
+                "SELECT b.id, b.created_at, "
                 "e.id AS eid, e.title, e.description, e.starts_at, e.venue, "
                 "e.total_seats, e.total_seats - COUNT(ba.id) AS seats_left "
                 "FROM eventbook.bookings b "
@@ -170,14 +168,17 @@ def book_seat(engine: Engine, actor: UserActor, event_id: uuid.UUID) -> dict:
 def list_my_bookings(
     engine: Engine, actor: UserActor, page: int, page_size: int
 ) -> dict:
-    """The actor's own bookings, active and cancelled, newest first."""
+    """The actor's current bookings, newest first."""
     page, page_size = parse_pagination(page, page_size)
     offset = (page - 1) * page_size
     params: dict = {"user_id": str(actor.id), "limit": page_size, "offset": offset}
     with engine.begin() as conn:
         conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         (total,) = conn.execute(
-            text("SELECT count(*) FROM eventbook.bookings WHERE user_id = :user_id"),
+            text(
+                "SELECT count(*) FROM eventbook.bookings "
+                "WHERE user_id = :user_id AND cancelled_at IS NULL"
+            ),
             params,
         ).fetchone()
         rows = (
@@ -185,14 +186,14 @@ def list_my_bookings(
             if offset >= total
             else conn.execute(
                 text(
-                    "SELECT b.id, b.created_at, b.cancelled_at, "
+                    "SELECT b.id, b.created_at, "
                     "e.id AS eid, e.title, e.description, e.starts_at, e.venue, "
                     "e.total_seats, e.total_seats - COUNT(ba.id) AS seats_left "
                     "FROM eventbook.bookings b "
                     "JOIN eventbook.events e ON e.id = b.event_id "
                     "LEFT JOIN eventbook.bookings ba "
                     "ON ba.event_id = e.id AND ba.cancelled_at IS NULL "
-                    "WHERE b.user_id = :user_id "
+                    "WHERE b.user_id = :user_id AND b.cancelled_at IS NULL "
                     "GROUP BY b.id, e.id "
                     "ORDER BY b.created_at DESC, b.id DESC "
                     "LIMIT :limit OFFSET :offset"
@@ -206,7 +207,7 @@ def list_my_bookings(
 
 
 def cancel_booking(engine: Engine, actor: UserActor, booking_id: uuid.UUID) -> None:
-    """Cancel an owned booking, freeing its seat; 204 on success or repeat."""
+    """Delete an owned future booking, freeing its seat; repeats return 404."""
     with engine.connect() as conn:
         located = conn.execute(
             text(
@@ -227,17 +228,13 @@ def cancel_booking(engine: Engine, actor: UserActor, booking_id: uuid.UUID) -> N
             ),
             {"booking_id": str(booking_id), "user_id": str(actor.id)},
         ).mappings().fetchone()
-        if booking is None:
+        if booking is None or booking["cancelled_at"] is not None:
             raise ApiError(404, "NOT_FOUND", "Booking not found.")
         if event["starts_at"] <= now_db:
             raise ApiError(409, "EVENT_STARTED", "This event has already started.")
-        if booking["cancelled_at"] is not None:
-            return
         conn.execute(
-            text(
-                "UPDATE eventbook.bookings SET cancelled_at = :now WHERE id = :booking_id"
-            ),
-            {"now": now_db, "booking_id": str(booking_id)},
+            text("DELETE FROM eventbook.bookings WHERE id = :booking_id"),
+            {"booking_id": str(booking_id)},
         )
 
 

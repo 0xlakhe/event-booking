@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AdminPage from "./page";
-import { AuthProvider } from "../../lib/auth";
+import { AuthProvider, useAuth } from "../../lib/auth";
 import { resetTokenStoreForTests } from "../../lib/token_store";
+import { getCachedPublicEventDetail, invalidatePublicEventDetail, loadPublicEventDetail } from "../../lib/public_event_cache";
 
 const { routerMock, navState } = vi.hoisted(() => ({
   routerMock: { push: vi.fn(), replace: vi.fn() },
@@ -19,6 +20,9 @@ const { apiMock } = vi.hoisted(() => ({
     listEvents: vi.fn(),
     attendees: vi.fn(),
     getEvent: vi.fn(),
+    deleteEvent: vi.fn(),
+    updateEvent: vi.fn(),
+    login: vi.fn(),
     me: vi.fn(async () => ({ id: "u-9", email: "boss@example.com", role: "admin" })),
   },
 }));
@@ -27,7 +31,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../../lib/api")>();
   return {
     ...mod,
-    api: { ...mod.api, me: apiMock.me, getEvent: apiMock.getEvent },
+    api: { ...mod.api, me: apiMock.me, login: apiMock.login, getEvent: apiMock.getEvent },
     adminApi: { ...mod.adminApi, ...apiMock },
   };
 });
@@ -245,5 +249,149 @@ describe("admin time filter", () => {
     fireEvent.change(screen.getByLabelText("Search events by title"), { target: { value: "gala" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(routerMock.push).toHaveBeenLastCalledWith("/admin?q=gala");
+  });
+});
+
+const ADMIN_A = { id: "admin-a", email: "a@example.com", role: "admin" };
+const ADMIN_B = { id: "admin-b", email: "b@example.com", role: "admin" };
+
+function AdminLoginHarness() {
+  const { login } = useAuth();
+  return (
+    <button type="button" onClick={() => void login("b@example.com", "password-123")}>
+      switch-admin
+    </button>
+  );
+}
+
+describe("admin list refresh context", () => {
+  it("invalidates warmed public details after an admin edit", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    const item = summary("Edited Show", "2030-01-01T10:00:00Z");
+    const detail = { ...item, description: "Edited Show description." };
+    invalidatePublicEventDetail(item.id);
+    apiMock.getEvent.mockResolvedValue(detail);
+    apiMock.updateEvent.mockResolvedValue(undefined);
+    apiMock.listEvents.mockResolvedValue({ items: [detail], total: 1 });
+    await loadPublicEventDetail(item.id);
+    expect(getCachedPublicEventDetail(item.id)).not.toBeNull();
+    render(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText(item.title);
+    fireEvent.click(within(screen.getByText(item.title).closest("li")!).getByRole("button", { name: "Edit" }));
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.submit(saveButton.closest("form")!);
+
+    await waitFor(() => expect(apiMock.updateEvent).toHaveBeenCalledTimes(1));
+    expect(getCachedPublicEventDetail(item.id)).toBeNull();
+  });
+
+  it("keeps same-query rows visible during mutation refresh and updates them afterward", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.me.mockResolvedValue(ADMIN_A);
+    apiMock.listEvents.mockResolvedValueOnce({
+      items: [summary("Current Show", "2030-01-01T10:00:00Z")],
+      total: 1,
+    });
+    apiMock.deleteEvent.mockResolvedValue(undefined);
+    let resolveRefresh!: (body: { items: ReturnType<typeof summary>[]; total: number }) => void;
+    apiMock.listEvents.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveRefresh = resolve)),
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("Current Show");
+
+    fireEvent.click(within(screen.getByText("Current Show").closest("li")!).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledTimes(2));
+    expect((await screen.findByRole("status")).textContent).toMatch(/updating events/i);
+    expect(screen.getByText("Current Show")).not.toBeNull();
+    expect(screen.getByText(/updating availability/i)).not.toBeNull();
+    resolveRefresh({ items: [summary("Updated Show", "2030-01-01T10:00:00Z")], total: 1 });
+    await screen.findByText("Updated Show");
+    expect(screen.queryByText("Current Show")).toBeNull();
+  });
+
+  it("does not show prior-query admin rows as the selected results", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin");
+    apiMock.listEvents.mockResolvedValueOnce({
+      items: [summary("Old Filter", "2030-01-01T10:00:00Z")],
+      total: 1,
+    });
+    let resolveNext!: (body: { items: ReturnType<typeof summary>[]; total: number }) => void;
+    apiMock.listEvents.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveNext = resolve)),
+    );
+    const view = render(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+    await screen.findByText("Old Filter");
+
+    navState.search = "q=new";
+    view.rerender(
+      <AuthProvider>
+        <AdminPage />
+      </AuthProvider>,
+    );
+
+    expect(screen.queryByText("Old Filter")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
+    resolveNext({ items: [summary("New Filter", "2030-01-01T10:00:00Z")], total: 1 });
+    await screen.findByText("New Filter");
+  });
+
+  it("hides previous-admin rows immediately when switching admin accounts", async () => {
+    sessionStorage.setItem("eventbook.token", "tok-admin-a");
+    apiMock.me.mockResolvedValue(ADMIN_A);
+    apiMock.login.mockResolvedValue({
+      access_token: "tok-admin-b",
+      token_type: "bearer",
+      expires_at: "2030-01-01T00:00:00Z",
+      user: ADMIN_B,
+    });
+    let resolveAttendees!: (body: { items: { booking_id: string; booked_at: string; user: { email: string } }[]; total: number }) => void;
+    apiMock.attendees.mockImplementation(
+      () => new Promise((resolve) => void (resolveAttendees = resolve)),
+    );
+    apiMock.listEvents.mockResolvedValueOnce({
+      items: [summary("Admin A Event", "2030-01-01T10:00:00Z")],
+      total: 1,
+    });
+    let resolveNext!: (body: { items: ReturnType<typeof summary>[]; total: number }) => void;
+    apiMock.listEvents.mockImplementationOnce(
+      () => new Promise((resolve) => void (resolveNext = resolve)),
+    );
+    render(
+      <AuthProvider>
+        <AdminPage />
+        <AdminLoginHarness />
+      </AuthProvider>,
+    );
+    await screen.findByText("Admin A Event");
+    fireEvent.click(screen.getByRole("button", { name: "Attendees" }));
+    await waitFor(() => expect(apiMock.attendees).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByText("switch-admin", { selector: "button" }));
+    resolveAttendees({
+      items: [{ booking_id: "booking-a", booked_at: "2030-01-01T00:00:00Z", user: { email: "private-a@example.com" } }],
+      total: 1,
+    });
+
+    await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Admin A Event")).toBeNull();
+    expect(screen.queryByText("private-a@example.com")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(/loading events/i);
+    resolveNext({ items: [summary("Admin B Event", "2030-01-01T10:00:00Z")], total: 1 });
+    await screen.findByText("Admin B Event");
   });
 });

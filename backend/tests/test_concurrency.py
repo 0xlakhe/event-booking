@@ -74,6 +74,17 @@ def _post_booking(
         slot["error"] = exc
 
 
+def _delete_booking(api: TestClient, booking_id: str, token: str, slot: dict) -> None:
+    try:
+        peer = TestClient(api.app)
+        slot["response"] = peer.delete(
+            f"/api/bookings/{booking_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except Exception as exc:  # pragma: no cover - surfaced below
+        slot["error"] = exc
+
+
 def test_booking_eligibility_uses_post_lock_time(
     clean_db: dict[str, str], api: TestClient, db: psycopg.Connection
 ) -> None:
@@ -123,6 +134,66 @@ def test_booking_eligibility_uses_post_lock_time(
             (event_id,),
         ).fetchone()
         assert active == 0
+
+
+def test_cancellation_eligibility_uses_post_lock_time(
+    clean_db: dict[str, str], api: TestClient, db: psycopg.Connection
+) -> None:
+    _ = clean_db
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO eventbook.events (id, title, description, starts_at, venue, total_seats) "
+            "VALUES (%s, 'Cancel crossing', 'Starts mid-wait.', "
+            "now() + make_interval(secs => 2), 'Hall', 2) RETURNING id",
+            (str(uuid.uuid4()),),
+        )
+        event_id = str(cur.fetchone()[0])
+        db.commit()
+    token = _register_login(api, _email())
+    booking_id = api.post(
+        f"/api/events/{event_id}/bookings", headers={"Authorization": f"Bearer {token}"}
+    ).json()["id"]
+
+    locker = psycopg.connect(clean_db["migration_url"].replace("+psycopg://", "://"))
+    slot: dict = {}
+    try:
+        with locker.cursor() as lock_cur:
+            lock_cur.execute(
+                "SELECT id FROM eventbook.events WHERE id = %s FOR UPDATE", (event_id,)
+            )
+            worker = threading.Thread(
+                target=_delete_booking, args=(api, booking_id, token, slot)
+            )
+            worker.start()
+            deadline = time.monotonic() + 5
+            waiting_for_lock = False
+            while time.monotonic() < deadline:
+                with db.cursor() as cur:
+                    (waiting_for_lock,) = cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                        "WHERE NOT granted AND pid <> pg_backend_pid())"
+                    ).fetchone()
+                if waiting_for_lock:
+                    break
+                if "response" in slot or "error" in slot:
+                    break
+                time.sleep(0.05)
+            assert waiting_for_lock, slot
+            time.sleep(3)  # the start time passes while cancellation waits
+            locker.commit()  # release the lock without touching the event
+            worker.join(timeout=20)
+            assert not worker.is_alive()
+            assert "error" not in slot
+            assert slot["response"].status_code == 409
+            assert slot["response"].json()["error"]["code"] == "EVENT_STARTED"
+    finally:
+        locker.close()
+
+    with db.cursor() as cur:
+        (remaining,) = cur.execute(
+            "SELECT count(*) FROM eventbook.bookings WHERE id = %s", (booking_id,)
+        ).fetchone()
+        assert remaining == 1
 
 
 def test_lock_timeout_is_retryable_without_mutation(

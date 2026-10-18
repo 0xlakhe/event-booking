@@ -126,9 +126,9 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 
 **Files:** `backend/app/bookings.py`, `backend/tests/test_bookings.py`, `backend/tests/test_concurrency.py`; update routes and common error mappings.
 
-**Interface:** `POST /api/events/{event_id}/bookings`, `GET /api/bookings/me`, `DELETE /api/bookings/{booking_id}` match the design. The booking module receives actor and IDs, owns transaction completion, and returns only committed results. Cancellation changes `cancelled_at`, not row deletion.
+**Interface:** `POST /api/events/{event_id}/bookings`, `GET /api/bookings/me`, `DELETE /api/bookings/{booking_id}` match the design. The booking module receives actor and IDs, owns transaction completion, and returns only committed results. Cancellation hard-deletes an owned future booking; current history excludes legacy soft-cancelled rows.
 
-- [x] Add failing integration cases for duplicate rejection, cancellation freeing capacity, rebooking, full/past booking, past cancellation, owner-only access, cancelled repeated cancellation, and own-history pagination. Use at least two users and query final database state after errors.
+- [x] Add failing integration cases for duplicate rejection, cancellation freeing capacity, rebooking, full/past booking, past cancellation, owner-only access, repeated-cancellation 404, and own-history pagination. Use at least two users and query final database state after errors.
 - [x] Implement READ COMMITTED event-row `FOR UPDATE` first; then fresh wall-clock eligibility, active duplicate/capacity queries in subsequent statements, mutation and commit. Cancellation may read an actor-scoped booking to find event ID before locking, but locks event before rereading/changing booking. Map known conflicts after rollback; set 5-second lock and 10-second statement timeouts.
 - [x] Verify eligibility after a lock wait crossing start time. Use a short controlled PostgreSQL fixture and two connections with synchronization, bounded waits, and generous test timeouts; do not rely on request-arrival time or transaction-start `now()`.
 - [x] Run core rule tests and inspect the locked capacity protocol. **Done:** mandatory rules B1–B4 are green with no mutation on rejection. Reserve the dedicated simultaneous-last-seat bonus demonstration/test for TASK-009 after required functionality works; the mandatory lock protocol and never-overbook invariant apply immediately.
@@ -141,7 +141,7 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 
 - [x] Add failing direct-API tests for unauthenticated/normal-user rejection on every admin route, input bounds/naive dates, capacity below/equal active count, active attendee privacy, past events, and deletion policy.
 - [x] Implement admin list including past events, validated CRUD with all required event fields, and active-only attendee pagination. Created events are immediately public; public inputs cannot assign an owner/role.
-- [x] For editing/deletion use the same event-first lock protocol. Reject capacity below active bookings and deletion with any active booking, including past events. Permit deletion otherwise and cascade cancelled history. Verify persisted state after failed edits/deletes.
+- [x] For editing/deletion use the same event-first lock protocol. Reject capacity below active bookings and deletion with any current booking, including past events. Permit deletion otherwise and cascade only any legacy soft-cancelled rows. Verify persisted state after failed edits/deletes.
 - [x] Run all backend rule tests and inspect edit/book serialization. Reserve the optional edit-versus-book concurrency demonstration for TASK-009. **Done:** B5–B6 and chosen deletion policy pass via direct API; README explains capacity/deletion/time trade-offs.
 
 ### Implementation Phase 3: Early release and complete user interface
@@ -150,7 +150,7 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 
 | Task | Description | Completed | Date |
 | --- | --- | --- | --- |
-| TASK-007 | Early deployment checkpoint with public browsing/auth slice; depends on TASK-006. | Blocked | 2026-10-15 |
+| TASK-007 | Early deployment checkpoint with public browsing/auth slice; depends on TASK-006. | In progress | 2026-10-17 |
 | TASK-008 | Complete user/admin frontend and UX checks; depends on TASK-007. Local work can continue if hosting access is blocked. | Yes | 2026-10-16 |
 
 #### TASK-007 execution
@@ -164,7 +164,9 @@ Tasks are sequential unless a dependency explicitly allows overlap. Read the tas
 - [ ] With deployment authorization and accounts, deploy a first version to the proposed hosts or recorded alternatives; provision Supabase roles/private schema, apply migrations explicitly, seed accounts, and confirm compatible PostgreSQL version, TLS, pool limits, exposed-schema isolation, and readiness. Run seed/migrations as one release action, not worker startup.
 - [ ] Verify live listing and login with both accounts; record app/API URLs, deployed revision, seed verification, cold-start behavior, and missing flows in README/evidence. **Done:** working deployed initial slice is accessible; it is not yet final acceptance. If external access is unavailable, record the exact block, keep this task incomplete, and continue TASK-008 locally. A local build never satisfies compulsory deployment.
 
-**Repo-side preparation (2026-10-17, not deployment):** `vercel.json` declares both Vercel Services in one project (nextjs `frontend/`, fastapi `backend/`); `/api/*` and `/health` route to the backend and everything else to the frontend, preserving the direct same-origin browser-to-API path. README records project setup, environment values, pre-deploy migration/seed commands and verification steps. The task stays Blocked until the accounts and authorization above exist; nothing is deployed.
+**Repo-side preparation (2026-10-17, not deployment):** `vercel.json` declares both Vercel Services in one project (nextjs `frontend/`, fastapi `backend/`); `/api/*` and `/health` route to the backend and everything else to the frontend, preserving the direct same-origin browser-to-API path. README records project setup, environment values, pre-deploy migration/seed commands and verification steps.
+
+**Hosted database slice (2026-10-17, partial):** the Supabase project now has the release roles, the private `eventbook` schema shell, migration `0001_initial`, and the seed (2 users, 13 events, 1 booking), verified through the session pooler with the restricted runtime role; platform roles have no `eventbook` access and hosted PostgreSQL is 17.11. Vercel environment values, the redeploy, and live verification remain (checkboxes above stay open).
 
 #### TASK-008 execution
 
