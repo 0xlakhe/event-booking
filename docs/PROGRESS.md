@@ -3267,3 +3267,99 @@ Verified before committing (claims made in the rewritten README):
 - The quick-start commands are unchanged from the previously verified set.
 
 Docs-only change: no code, tests, or configuration were touched.
+
+## Bookings cancellation in-place refresh (2026-10-18, NPT)
+
+User report: cancelling a booking on My bookings made the page look like it was
+reloading.
+
+Root cause: the post-cancellation success path cleared the rendered list
+(`setItems([]); setTotal(0); setLoadedFor(null)`) before refetching the page, so
+the list blanked to "Loading bookings…" and re-rendered — a full-page reload in
+appearance — and the failure path's refresh did the same. This contradicted the
+refresh contract in `docs/TECHNICAL_DESIGN.md` (lines ~158–167): matching
+background refreshes retain results, expose a compact accessible updating
+status, and mark the collection busy.
+
+Changed:
+- `frontend/src/app/bookings/page.tsx`: `load()` now takes
+  `{ keepFailure, keepRows }`; `keepRows` skips the pre-fetch clearing of
+  `items`/`total`/`loadedFor`, so the retained rows render with the
+  "Updating bookings…" status and `aria-busy` instead of the empty loading
+  state. Both post-cancellation refreshes use it (`load({ keepRows: true })` on
+  success, `load({ keepFailure: true, keepRows: true })` on failure): the
+  cancelled row disappears only when the fresh page arrives.
+- `frontend/src/app/bookings/page.test.tsx`: the two cancel-refresh tests now
+  hold the refresh promise open and assert the rows stay visible, no "loading
+  bookings" state appears, and the updating status shows; a new test binds
+  `keepFailure` (a repeated failed cancellation keeps its existing message
+  visible while the refresh runs).
+- `README.md`: UX safeguards bullet notes cancellations refresh the bookings
+  list in place; test count 153 → 154.
+
+Evidence (actual runs):
+- Pre-change code with the updated tests → 2 failed | 20 passed: both in-place
+  assertions fail because the list blanks (the reported behavior).
+- `docker compose exec -T frontend npm test` → 154 passed (13 files);
+  `docker compose exec -T frontend npm run typecheck` → clean;
+  `git diff --check` → clean; focused file → 23 passed.
+- Mutation checks (each reverted after): success-path `keepRows` removed → only
+  "keeps the list on screen while the cancellation refresh runs" fails;
+  failure-path `keepRows` removed → only "keeps the error visible after the
+  post-failure refetch, without blanking the list" fails; `keepFailure` removed
+  → only "keeps the previous failure message while a repeated cancellation
+  refreshes" fails.
+- Local-stack browser run (`user@example.com`): reproduced the pre-fix flow
+  (backend log shows `DELETE` followed by the refresh
+  `GET /api/bookings/me?page=1&page_size=10` while the list blanked), then
+  repeated a book → cancel flow on the fixed build: same server calls, rows
+  retained during the refresh, only the cancelled row gone afterwards, no
+  error states. The local stack is too fast to visually capture the
+  intermediate frame; that behavior is bound deterministically by the
+  component tests.
+
+Independent review (fresh reviewer subagent, session
+`ses_eb116d405ffeplQX4T2gujaa3j`, read-only): no blocking findings. The
+reviewer rebuilt pre-fix and mutated scratch copies outside the repo and
+independently reproduced pre-fix 2 failed | 20 passed, the full suite (153 at
+review time), typecheck, both `keepRows` mutation bindings, and an extra
+step-back mutation (disabling the step-back branch fails only the step-back
+test); the repo was left byte-identical. Corrections applied from its minor
+findings: this record (finding 1) and the `keepFailure` binding test
+(finding 2). Recorded, not adopted: the retained row keeps its disabled
+"Cancelling…" label while a failed cancel refreshes (defensible — every cancel
+button stays disabled until the refresh settles) and the pre-existing untracked
+`frontend/tsconfig.tsbuildinfo` artifact (suggested `*.tsbuildinfo` gitignore
+or removal; left for the user).
+
+Supersedes: the TASK-008 bounded-cache follow-up recorded that "a confirmed
+cancellation removes its row immediately before the refreshed bookings
+response arrives" (its reviewer's P2 correction). This entry deliberately
+reverses that implementation choice — the immediate-removal rule caused the
+reported full-page-reload appearance — and the later refresh contract now
+governs. The original concern (a cancelled booking appearing actionable or
+final) does not apply: the refresh is immediate and automatic, every cancel
+button is disabled until it settles, and the cancelled row is gone as soon as
+the fresh page arrives.
+
+Committed `e0b04f0` (`fix: keep the bookings list on screen while a
+cancellation refreshes`) and pushed normally to `origin/main`
+(`ad70bf7..e0b04f0`; no force push).
+
+Limitations:
+- If the post-cancel refresh fails at the network level, the stale (already
+  cancelled) row remains rendered alongside a retryable error until Retry; the
+  design contract permits retained rows on a failed refresh, and the backend
+  remains authoritative for the cancellation.
+- Pre-existing, unchanged: pagination buttons are not disabled while a
+  cancellation is pending, so paging mid-cancel supersedes the cancel refresh
+  (the reviewer analyzed it as identical pre/post fix; out of scope).
+- Deployed-site rollout verified read-only: the stable domain's HTML etag was
+  `37b0f34f9c82533663b289e8c1f11599` at push time and
+  `5bc85cf1548edc304fde37c0b942bdd9` (age 0) on the next direct check, with
+  `/`, `/health`, `/api/events?page=1&page_size=1`, and `/bookings` all
+  returning HTTP 200. The exact build baked into the deployment cannot be
+  independently obtained here; `e0b04f0` was the only commit pushed since the
+  baseline, so the rollout is attributed to it on that basis and the dashboard
+  Ready state remains unverified. No authenticated production requests were
+  made.
