@@ -3363,3 +3363,24 @@ Limitations:
   baseline, so the rollout is attributed to it on that basis and the dashboard
   Ready state remains unverified. No authenticated production requests were
   made.
+
+## README cleanup: remove status-report section (2026-10-19, NPT)
+
+User feedback: the README's "Known issues and next steps" section read as
+internal status-report material rather than README material.
+
+Changed:
+- `README.md`: removed the "Known issues and next steps" section and its
+  table-of-contents entry; the README now runs Live demo → Features → Tech
+  stack → Quick start → Configuration → Tests → API → How it works → Project
+  structure → Deployment → How this was built (AI disclosure).
+- `docs/TECHNICAL_DESIGN.md`: dropped the now-stale "(recorded as a limitation
+  in README)" parenthetical from the login-throttle sentence, and recorded the
+  absent third-party error monitoring beside the `/health` readiness contract.
+
+The removed caveats remain where they belong: the in-process scope of the
+throttle state in the design doc's authentication section, the seeded-dataset
+aging note in the README's Live demo and Quick start bullets, and the
+read-only rollout caveats in `docs/PROGRESS.md`.
+
+Docs-only change: no code, tests, or configuration touched.

@@ -26,7 +26,6 @@ one Vercel project with two Services and Supabase PostgreSQL in production.
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
 - [Deployment](#deployment)
-- [Known issues and next steps](#known-issues-and-next-steps)
 - [How this was built](#how-this-was-built-ai-disclosure)
 
 ## Live demo
@@ -257,18 +256,6 @@ ALTER SCHEMA eventbook OWNER TO eventbook_migrator;
 Verified after provisioning: Supabase's `anon`, `authenticated`, and `service_role` have no
 `eventbook` usage.
 </details>
-
-## Known issues and next steps
-
-- The optional brief bonuses are implemented: the simultaneous-last-seat race proof and a
-  capacity-edit race live in `backend/tests/test_concurrency.py`, and repeated failed logins are
-  throttled (`429 TOO_MANY_ATTEMPTS` with `Retry-After`). Throttling state is in-process, so with
-  multiple backend instances it bounds each instance's buckets rather than the whole fleet;
-  capacity correctness is row-lock enforced regardless.
-- Seed timestamps are relative to seeding time, so the demo dataset ages; re-run the seed for a
-  fresh demo (the hosted dataset also drifts as people test).
-- Operational surface is intentionally small: sanitized errors and the `/health` readiness
-  endpoint; there is no third-party error monitoring.
 
 ## How this was built (AI disclosure)
 
