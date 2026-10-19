@@ -11,7 +11,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
-    app_env: str = Field(default="development", alias="APP_ENV")
     database_url: str = Field(alias="DATABASE_URL")
     allowed_origins: str = Field(default="http://localhost:3000", alias="ALLOWED_ORIGINS")
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
@@ -22,11 +21,6 @@ class Settings(BaseSettings):
     login_rate_limit_window_seconds: int = Field(
         default=60, alias="LOGIN_RATE_LIMIT_WINDOW_SECONDS"
     )
-
-    # Tools-only URLs (optional for backend runtime; required in tools).
-    migration_database_url: str | None = Field(default=None, alias="MIGRATION_DATABASE_URL")
-    test_database_url: str | None = Field(default=None, alias="TEST_DATABASE_URL")
-    test_migration_database_url: str | None = Field(default=None, alias="TEST_MIGRATION_DATABASE_URL")
 
     # Expected Alembic head revision for readiness. When set, /health
     # requires an exact match; when unset, any stored revision suffices.

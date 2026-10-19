@@ -11,7 +11,7 @@
  * unusual environments can substitute or remove sessionStorage.
  */
 
-export const TOKEN_STORAGE_KEY = "eventbook.token";
+const TOKEN_STORAGE_KEY = "eventbook.token";
 
 export type TokenPersistence = "persisted" | "memory-only";
 

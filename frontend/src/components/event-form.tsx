@@ -9,27 +9,17 @@ import type { FormEvent, ReactNode } from "react";
 import type { EventDetail, EventInput } from "../lib/api";
 import { NEPAL_LABEL, nepalInputFromTimestamp, nepalInputToTimestamp } from "../lib/datetime";
 
-export interface EventFormValues {
-  title: string;
-  description: string;
-  starts_at: string;
-  venue: string;
-  total_seats: number;
-}
-
 export default function EventForm({
   initial,
   pending,
-  failure,
   submitLabel,
   onSubmit,
   onCancel,
 }: {
   initial?: EventDetail;
   pending: boolean;
-  failure: string | null;
   submitLabel: string;
-  onSubmit(values: EventFormValues): void;
+  onSubmit(values: EventInput): void;
   onCancel?: () => void;
 }) {
   const [title, setTitle] = useState(initial?.title ?? "");
@@ -104,7 +94,7 @@ export default function EventForm({
           required
         />,
       )}
-      {(localError ?? failure) !== null && <p role="alert">{localError ?? failure}</p>}
+      {localError !== null && <p role="alert">{localError}</p>}
       <p className="button-row">
         <button className="button-primary" type="submit" disabled={pending}>
           {pending ? "Saving…" : submitLabel}

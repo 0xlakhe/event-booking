@@ -5,8 +5,8 @@
  * timestamps. The device timezone is never consulted.
  */
 
-export const NEPAL_TIME_ZONE = "Asia/Kathmandu";
-export const NEPAL_OFFSET = "+05:45";
+const NEPAL_TIME_ZONE = "Asia/Kathmandu";
+const NEPAL_OFFSET = "+05:45";
 export const NEPAL_LABEL = "Nepal time (UTC+05:45)";
 
 const displayFormat = new Intl.DateTimeFormat("en-GB", {

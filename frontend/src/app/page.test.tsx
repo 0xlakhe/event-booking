@@ -164,7 +164,7 @@ describe("stale search responses", () => {
 
   it("shows the empty state when no events match", async () => {
     apiMock.listEvents.mockResolvedValue({ items: [], total: 0 });
-    const restoredListing = render(
+    render(
       <AuthProvider>
         <Home />
       </AuthProvider>,

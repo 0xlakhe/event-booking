@@ -83,7 +83,7 @@ export interface Booking {
   created_at: string;
 }
 
-export interface AttendeeUser {
+interface AttendeeUser {
   id: string;
   email: string;
 }

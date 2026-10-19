@@ -14,9 +14,9 @@ Browser → Next.js frontend → FastAPI REST API → PostgreSQL (local Compose 
 - **Auth module:** register, login, resolve current user, logout. Hides hashing, sessions, and credential lookup behind a small interface; callers receive an authenticated user, never a password hash or session hash.
 - **Events module:** public listing/detail and admin event mutations/attendees. Owns filtering, capacities, and event editing/deletion policy.
 - **Bookings module:** book, list own bookings, cancel. Its interface accepts the authenticated actor and identifiers; it owns ownership checks and the whole transaction, rather than requiring route handlers to coordinate locks.
-- **Database module:** one SQLAlchemy engine and request-scoped sessions using synchronous SQLAlchemy + psycopg, with Alembic for versioned migrations. Use synchronous FastAPI handlers for blocking database work. Share transaction helpers without adding a generic repository framework or hypothetical adapters.
+- **Database module:** one cached SQLAlchemy engine per configuration with explicit connection/transaction scopes using synchronous SQLAlchemy + psycopg, with Alembic for versioned migrations. Use synchronous FastAPI handlers for blocking database work. Share transaction helpers without adding a generic repository framework or hypothetical adapters.
 
-Use a simple `frontend/` and `backend/` repository split. Backend modules can be ordinary Python files/packages with Pydantic input/output models. Dependency injection provides database sessions and current-user resolution. HTTP handlers translate results/errors; transactions remain local to the owning module. Tests exercise the HTTP interface against PostgreSQL, including real commits for concurrency tests.
+Use a simple `frontend/` and `backend/` repository split. Backend modules can be ordinary Python files/packages with Pydantic input/output models. Dependency injection provides current-user resolution. HTTP handlers translate results/errors; transactions remain local to the owning module. Tests exercise the HTTP interface against PostgreSQL, including real commits for concurrency tests.
 
 ## Proposed database model
 

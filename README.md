@@ -108,7 +108,7 @@ open http://localhost:3000/
 | `MIGRATION_DATABASE_URL` | Alembic and seed connection (privileged migrator role; tools service only) |
 | `TEST_DATABASE_URL`, `TEST_MIGRATION_DATABASE_URL` | Isolated `eventbook_test` targets; the test suite refuses anything else |
 | `SEED_ADMIN_EMAIL`, `SEED_USER_EMAIL` (+ passwords) | Demo accounts created by the seed |
-| `APP_ENV`, `ALLOWED_ORIGINS`, `DB_POOL_SIZE`, `DB_CONNECT_TIMEOUT` | Backend runtime settings (exact CORS origins, bounded pool) |
+| `ALLOWED_ORIGINS`, `DB_POOL_SIZE`, `DB_CONNECT_TIMEOUT` | Backend runtime settings (exact CORS origins, bounded pool) |
 | `LOGIN_RATE_LIMIT_ATTEMPTS`, `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | Failed-login throttle, per client address + account (defaults: 5 failures per 60 s) |
 | `EXPECTED_ALEMBIC_REVISION` | Readiness gate for `/health` |
 | `NEXT_PUBLIC_API_BASE_URL` | Frontend API base; `/api` in production (inlined at build time) |
@@ -220,7 +220,7 @@ Supabase specifics:
 
 Release order: apply migrations first (`alembic upgrade head` with the migrator URL), set the
 Vercel Production variables (`NEXT_PUBLIC_API_BASE_URL=/api`, sensitive `DATABASE_URL`,
-`APP_ENV=production`, `ALLOWED_ORIGINS`, `EXPECTED_ALEMBIC_REVISION`, `DB_POOL_SIZE`), deploy,
+`ALLOWED_ORIGINS`, `EXPECTED_ALEMBIC_REVISION`, `DB_POOL_SIZE`), deploy,
 then verify `/health`, both demo logins, and the event list. The hosted database is at
 `0002_booking_hard_delete`.
 

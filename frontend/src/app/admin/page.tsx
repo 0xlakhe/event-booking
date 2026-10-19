@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import EventForm, { type EventFormValues } from "../../components/event-form";
+import EventForm from "../../components/event-form";
 import EventDescription from "../../components/event-description";
-import { ApiRequestError, adminApi, api, type Attendee, type EventDetail, type TimeFilter } from "../../lib/api";
+import { ApiRequestError, adminApi, api, type Attendee, type EventDetail, type EventInput, type TimeFilter } from "../../lib/api";
 import { cacheAdminEventList, getAdminEventListCacheRevision, getCachedAdminEventList, invalidateAdminEventLists } from "../../lib/admin_event_cache";
 import { useAuth } from "../../lib/auth";
+import { hasStarted } from "../../lib/clock";
 import { NEPAL_LABEL, formatNepal } from "../../lib/datetime";
 import { invalidatePublicEventDetail } from "../../lib/public_event_cache";
 import { invalidatePublicEventLists } from "../../lib/event_list_navigation";
@@ -41,12 +42,6 @@ function adminErrorMessage(code: string, fallback: string): string {
     default:
       return fallback;
   }
-}
-
-function isStarted(startsAt: string): boolean {
-  // Display gating only; the backend re-checks fresh database time and
-  // stays authoritative for every mutation.
-  return new Date(startsAt).getTime() <= Date.now();
 }
 
 export default function AdminPage() {
@@ -245,7 +240,7 @@ function Admin() {
     }
   }
 
-  async function save(values: EventFormValues) {
+  async function save(values: EventInput) {
     const token = getToken();
     if (token === null) return;
     setSaving(true);
@@ -414,7 +409,6 @@ function Admin() {
               <h2>New event</h2>
               <EventForm
                 pending={saving}
-                failure={null}
                 submitLabel="Create event"
                 onSubmit={(values) => void save(values)}
                 onCancel={() => setCreating(false)}
@@ -436,14 +430,13 @@ function Admin() {
                   <EventForm
                     initial={editing}
                     pending={saving}
-                    failure={null}
                     submitLabel="Save changes"
                     onSubmit={(values) => void save(values)}
                     onCancel={() => setEditing(null)}
                   />
                 ) : (
                   <div className="admin-actions">
-                    {!isStarted(event.starts_at) && (
+                    {!hasStarted(event.starts_at, Date.now()) && (
                       <p className="button-row">
                         <button type="button" disabled={saving} onClick={() => void startEdit(event.id)}>
                           Edit

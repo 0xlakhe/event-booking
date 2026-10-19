@@ -28,7 +28,6 @@ services:
       # Runtime only. No bootstrap/migration/test credentials here.
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required (see .env.example)}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
-      APP_ENV: ${APP_ENV:-development}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
       LOGIN_RATE_LIMIT_ATTEMPTS: ${LOGIN_RATE_LIMIT_ATTEMPTS:-5}
@@ -110,7 +109,6 @@ services:
       SEED_USER_EMAIL: ${SEED_USER_EMAIL:-user@example.com}
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:?SEED_USER_PASSWORD is required}
       EXPECTED_ALEMBIC_REVISION: ${EXPECTED_ALEMBIC_REVISION:-}
-      APP_ENV: ${APP_ENV:-development}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
     depends_on:

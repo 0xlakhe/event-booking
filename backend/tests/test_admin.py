@@ -93,7 +93,6 @@ def test_admin_routes_reject_unauthenticated_and_normal_users(
 ) -> None:
     _ = clean_db
     admin = _make_admin(api, db)
-    admin_headers = _auth(admin)
     event_id = _create_event(api, admin)["id"]
     user = _register_login(api, _email())
     user_headers = _auth(user)

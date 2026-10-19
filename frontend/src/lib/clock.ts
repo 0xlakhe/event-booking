@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 
-export const ELIGIBILITY_TICK_MS = 30_000;
+const ELIGIBILITY_TICK_MS = 30_000;
 
 export function useNow(intervalMs: number = ELIGIBILITY_TICK_MS): number {
   const [now, setNow] = useState(() => Date.now());

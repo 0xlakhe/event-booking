@@ -18,6 +18,7 @@ node_modules/
 .next/
 out/
 *.log
+*.tsbuildinfo
 
 # Docker data (volumes hold real data; this is only for stray local dirs)
 postgres_data/
