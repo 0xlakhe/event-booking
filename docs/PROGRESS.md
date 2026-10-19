@@ -3384,3 +3384,92 @@ aging note in the README's Live demo and Quick start bullets, and the
 read-only rollout caveats in `docs/PROGRESS.md`.
 
 Docs-only change: no code, tests, or configuration touched.
+
+## Full-codebase audit and dead-code cleanup (2026-10-19, NPT)
+
+User request: audit the entire codebase and remove unnecessary code.
+
+Scope: the whole tracked tree (empty tree
+`4b825dc642cb6eb9a060e54bf8d69288fbee4904` → HEAD `4251b0d`, 90 files),
+reviewed on two axes by parallel sub-agents: Standards (AGENTS.md plus the
+Fowler smell baseline; session `ses_ead98ab5affe2f91Z04SP1SkNl`) and Spec
+(`docs/REQUIREMENTS.md`, `docs/TECHNICAL_DESIGN.md`,
+`docs/IMPLEMENTATION_PLAN.md`; session `ses_ead98ab59ffejHxrTv7FcIDTDz`).
+`docs/agents/issue-tracker.md` is absent, so the local spec documents served
+as the Spec source. Dead-code evidence came from `tsc --noUnusedLocals
+--noUnusedParameters`, `knip`, `ruff` (F401/F841/F811), repo-wide reference
+searches, and manual reading.
+
+Removed (each proven unreferenced; framework/dynamic usage searched):
+- `backend/app/db.py`: `get_db()`, the `_session_factories` cache, and the
+  imports that existed only for them. No route used the session seam; handlers
+  use `get_engine()` with explicit connection/transaction scopes.
+  `docs/TECHNICAL_DESIGN.md` updated to match, and the historical TASK-001
+  interface note in `docs/IMPLEMENTATION_PLAN.md` marked superseded.
+- `backend/app/config.py`: `app_env` and the tools-only
+  `migration_database_url` / `test_database_url` /
+  `test_migration_database_url` Settings fields. The tools, migration
+  environment, and tests read those variables via `os.environ` directly;
+  `APP_ENV` was read nowhere. Removed `APP_ENV` from `compose.yaml`,
+  `.env.example`, and both README lists.
+- `frontend/src/components/event-form.tsx`: the unused `EventFormValues`
+  duplicate of `EventInput` and the `failure` prop/branch, which both admin
+  call sites always passed as `null` (page-level errors render separately).
+- `frontend/src/app/admin/page.tsx`: local `isStarted` duplicate replaced by
+  shared `hasStarted()`; same `<= Date.now()` semantics, including invalid
+  dates.
+- Unused exports made module-private: `ELIGIBILITY_TICK_MS`,
+  `NEPAL_TIME_ZONE`, `NEPAL_OFFSET`, `TOKEN_STORAGE_KEY`, `AttendeeUser`.
+- Unused test locals: one `restoredListing` declaration in
+  `frontend/src/app/page.test.tsx` (the other is used for `unmount()`), and
+  the `admin_headers` assignment plus its unused `_auth(admin)` call in
+  `backend/tests/test_admin.py`.
+- `.gitignore`: added `*.tsbuildinfo` (generated; was untracked).
+
+Not changed (recorded as follow-ups, deliberately outside a dead-code
+cleanup): the four overlapping frontend error-code switches; duplicated
+booking seat-aggregate SQL and the seed's re-implementation of booking rules;
+duplicated backend test helpers; route handlers keeping transactions inline
+(`admin_list_attendees`, `get_event`); untyped `-> dict` module interfaces.
+The `_ = actor` / `_ = request` assignments were kept because they mark
+parameters that exist for FastAPI dependency side effects
+(authorization/error handlers).
+
+Spec-axis findings (no code defects; conflicts are user decisions or
+pre-existing):
+- The brief asks the README to document demo credentials; the README says
+  "Passwords are provided with the submission" per the explicit instruction
+  not to publish live/demo passwords.
+- The brief asks for a README "Known issues / next steps" section; it was
+  removed on explicit user feedback that it read as internal status-report
+  material. The content lives in this document and the design doc.
+- Live authenticated acceptance (book/cancel/admin on the deployed site) is
+  still unperformed/unproven and TASK-009 remains open. No production data was
+  touched by this audit.
+
+Verification (actual runs):
+- `docker compose exec -T frontend npm test` → 154 passed (13 files).
+- `docker compose exec -T frontend npm run typecheck` → clean.
+- `docker compose exec -T frontend npx tsc --noEmit --noUnusedLocals
+  --noUnusedParameters` → clean.
+- `cd frontend && npx knip --no-progress` → no unused files/exports/
+  dependencies reported.
+- `docker compose --profile tools run --rm tools pytest -q` → 123 passed
+  (one pre-existing Starlette deprecation warning).
+- `uvx ruff check backend/app backend/tests backend/migrations --select
+  F401,F841,F811` → all checks passed.
+- `docker compose config -q` → OK; `git diff --check` → clean.
+
+Independent review (fresh reviewer subagent, session
+`ses_ead7c5310ffeFPFpHdolK3oGQc`, read-only): no blocking findings. It
+independently re-ran the frontend suite (154 passed), both tsc variants, the
+backend suite (123 passed), `docker compose config -q`, and `git diff
+--check`, and repo-wide searches found no surviving references to any removed
+symbol or framework/string-based reachability. Corrections applied from its
+minor findings: the TASK-001 plan note, the "per configuration" engine
+wording, the removal of the retained no-op `_auth(admin)` call, and the
+`*.tsbuildinfo` ignore. Limitation: the reviewer could not run `ruff`/`knip`
+(not installed in its environments); those runs above are builder-executed.
+
+Committed `2f68280` (`chore: remove dead code found in full-codebase audit`).
+Not pushed at the time of writing.
