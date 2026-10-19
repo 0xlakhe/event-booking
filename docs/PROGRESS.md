@@ -3482,3 +3482,30 @@ confirming check), and `/`, `/health`, `/api/events?page=1&page_size=1`, and
 `{"status":"ok","database":"connected","schema":"ready"}`. No authenticated
 production requests were made; the admin/bookings flows are covered by the
 component tests and local-stack runs.
+
+## README restored to brief requirements (2026-10-19, NPT)
+
+User request: after checking the brief, restore the README items it asks for.
+
+Changed:
+- `README.md`: restored the "Known issues and next steps" section and its
+  table-of-contents entry, scoped to actual limitations (per-process login
+  throttle, aging seed data, no third-party error monitoring) with the
+  intended next step for each.
+- `README.md`: the Live demo now lists the seeded admin and user credentials
+  (`admin@admin.com` / `admin123`; `user@example.com` /
+  `aa2ae2f05637c1b72ffb0831`) instead of "Passwords are provided with the
+  submission", matching the brief's "Live links & test accounts" requirement
+  and its instruction to seed so evaluators can log in immediately.
+
+This supersedes the earlier README removals for this submission requirement.
+The production values come from the gitignored `.env.release.local`; the admin
+value was already live-verified in the 2026-10-18 credential-change entry.
+
+Verification: live API login as `user@example.com` → 200; `/auth/me` → 200
+(`user@example.com`, role `user`); logout → 204 (session removed). The first
+attempt with the local-only seed password returned 401, confirming the release
+env differs. No booking or other production data was touched.
+
+Committed and pushed normally to `origin/main` with this record (no force
+push).

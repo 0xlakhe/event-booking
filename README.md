@@ -26,12 +26,13 @@ one Vercel project with two Services and Supabase PostgreSQL in production.
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
 - [Deployment](#deployment)
+- [Known issues and next steps](#known-issues-and-next-steps)
 - [How this was built](#how-this-was-built-ai-disclosure)
 
 ## Live demo
 
-- **Admin:** `admin@admin.com` · **User:** `user@example.com`. Passwords are provided with the
-  submission. Registering a new account works too.
+- **Admin:** `admin@admin.com` / `admin123` · **User:** `user@example.com` /
+  `aa2ae2f05637c1b72ffb0831`. Registering a new account works too.
 - **Suggested tour:** browse and search the events list → open an event → book a seat → cancel it
   from "My bookings" → log in as the admin → create, edit, or delete an event (started events are
   read-only).
@@ -256,6 +257,19 @@ ALTER SCHEMA eventbook OWNER TO eventbook_migrator;
 Verified after provisioning: Supabase's `anon`, `authenticated`, and `service_role` have no
 `eventbook` usage.
 </details>
+
+## Known issues and next steps
+
+- **Failed-login throttling is per process.** Each backend instance keeps its own bounded window,
+  so several instances would each enforce their own buckets rather than one fleet-wide limit.
+  Next step: move the counters to shared storage (for example Redis or a PostgreSQL table) if the
+  backend scales horizontally. Capacity correctness is row-lock enforced regardless.
+- **Demo data ages.** Seed timestamps are relative to seeding time, and the hosted dataset also
+  drifts as people test. Re-run the seed before a demo; a scheduled reseed or relative fixtures
+  would keep it evergreen.
+- **Operational surface is small.** Errors are sanitized and `/health` reports readiness, but there
+  is no third-party error monitoring or alerting. Next step: add an error tracker (for example
+  Sentry) and a small uptime check.
 
 ## How this was built (AI disclosure)
 
