@@ -3471,5 +3471,14 @@ wording, the removal of the retained no-op `_auth(admin)` call, and the
 `*.tsbuildinfo` ignore. Limitation: the reviewer could not run `ruff`/`knip`
 (not installed in its environments); those runs above are builder-executed.
 
-Committed `2f68280` (`chore: remove dead code found in full-codebase audit`).
-Not pushed at the time of writing.
+Committed `2f68280` (`chore: remove dead code found in full-codebase audit`) and
+`c3ee6af` (this record), then pushed normally to `origin/main`
+(`4251b0d..c3ee6af`; no force push). Deployed-site rollout verified read-only:
+the stable domain's HTML etag changed from
+`fb7f75dd9b31cd56bb6809aba45b712f` (baseline) to
+`ec4f8b258f1c7e86af54ba1ef4a12a2d` about 50 s after the push (age 11 s on the
+confirming check), and `/`, `/health`, `/api/events?page=1&page_size=1`, and
+`/bookings` all returned HTTP 200; `/health` reported
+`{"status":"ok","database":"connected","schema":"ready"}`. No authenticated
+production requests were made; the admin/bookings flows are covered by the
+component tests and local-stack runs.
